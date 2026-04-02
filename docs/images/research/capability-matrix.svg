@@ -1,0 +1,76 @@
+<svg width="1400" height="860" viewBox="0 0 1400 860" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Claude Code capability matrix</title>
+  <desc id="desc">Matrix showing the major capability surfaces, primary files, runtime role, and activity status for the reconstructed Claude Code repository.</desc>
+  <rect width="1400" height="860" fill="#FFFDF8"/>
+  <rect x="36" y="36" width="1328" height="788" rx="28" fill="#FFFFFF" stroke="#F1E7D0" stroke-width="2"/>
+  <text x="64" y="90" fill="#0F172A" font-size="32" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-weight="700">Capability Matrix</text>
+  <text x="64" y="123" fill="#64748B" font-size="18" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">Primary files, runtime role, and current status in the external build</text>
+
+  <rect x="64" y="160" width="220" height="56" rx="14" fill="#FFF7ED"/>
+  <rect x="292" y="160" width="390" height="56" rx="14" fill="#FFF7ED"/>
+  <rect x="690" y="160" width="418" height="56" rx="14" fill="#FFF7ED"/>
+  <rect x="1116" y="160" width="220" height="56" rx="14" fill="#FFF7ED"/>
+  <text x="84" y="195" fill="#B45309" font-size="20" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-weight="700">Surface</text>
+  <text x="312" y="195" fill="#B45309" font-size="20" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-weight="700">Primary files</text>
+  <text x="710" y="195" fill="#B45309" font-size="20" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-weight="700">Runtime role</text>
+  <text x="1136" y="195" fill="#B45309" font-size="20" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-weight="700">Status</text>
+
+  <g font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-size="17" fill="#0F172A">
+    <rect x="64" y="230" width="1272" height="74" rx="16" fill="#FFFFFF" stroke="#E2E8F0"/>
+    <text x="84" y="273" font-weight="700">Startup orchestration</text>
+    <text x="312" y="262">src/entrypoints/cli.tsx</text>
+    <text x="312" y="286">src/main.tsx, build.ts</text>
+    <text x="710" y="262">defines external-build semantics, startup fast-paths,</text>
+    <text x="710" y="286">interactive vs print dispatch, and bootstrap ordering</text>
+    <rect x="1140" y="246" width="112" height="40" rx="20" fill="#DCFCE7"/>
+    <text x="1168" y="272" fill="#166534" font-weight="700">active</text>
+
+    <rect x="64" y="318" width="1272" height="74" rx="16" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="84" y="361" font-weight="700">Interactive shell</text>
+    <text x="312" y="350">src/replLauncher.tsx</text>
+    <text x="312" y="374">src/screens/REPL.tsx</text>
+    <text x="710" y="350">Ink UI, message queue, permission UI, dynamic tool and</text>
+    <text x="710" y="374">command aggregation, direct invocation of query()</text>
+    <rect x="1140" y="334" width="112" height="40" rx="20" fill="#DCFCE7"/>
+    <text x="1168" y="360" fill="#166534" font-weight="700">active</text>
+
+    <rect x="64" y="406" width="1272" height="74" rx="16" fill="#FFFFFF" stroke="#E2E8F0"/>
+    <text x="84" y="449" font-weight="700">Headless runtime</text>
+    <text x="312" y="438">src/cli/print.ts</text>
+    <text x="312" y="462">src/QueryEngine.ts</text>
+    <text x="710" y="438">SDK/automation path, transcript resume, message lifecycle,</text>
+    <text x="710" y="462">single-turn wrapper over the shared query loop</text>
+    <rect x="1140" y="422" width="112" height="40" rx="20" fill="#DCFCE7"/>
+    <text x="1168" y="448" fill="#166534" font-weight="700">active</text>
+
+    <rect x="64" y="494" width="1272" height="74" rx="16" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="84" y="537" font-weight="700">Tool plane</text>
+    <text x="312" y="526">src/tools.ts</text>
+    <text x="312" y="550">src/Tool.ts</text>
+    <text x="710" y="526">built-in tools, deny-rule filtering, REPL masking,</text>
+    <text x="710" y="550">MCP tool assembly, preset handling</text>
+    <rect x="1140" y="510" width="112" height="40" rx="20" fill="#DCFCE7"/>
+    <text x="1168" y="536" fill="#166534" font-weight="700">active</text>
+
+    <rect x="64" y="582" width="1272" height="74" rx="16" fill="#FFFFFF" stroke="#E2E8F0"/>
+    <text x="84" y="625" font-weight="700">Command &amp; skill plane</text>
+    <text x="312" y="614">src/commands.ts</text>
+    <text x="312" y="638">src/skills/loadSkillsDir.ts</text>
+    <text x="710" y="614">built-ins, bundled skills, local skills, plugin skills,</text>
+    <text x="710" y="638">dynamic discovery and conditional activation</text>
+    <rect x="1140" y="598" width="112" height="40" rx="20" fill="#DCFCE7"/>
+    <text x="1168" y="624" fill="#166534" font-weight="700">active</text>
+
+    <rect x="64" y="670" width="1272" height="74" rx="16" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="84" y="713" font-weight="700">MCP &amp; edge surfaces</text>
+    <text x="312" y="702">src/services/mcp/client.ts</text>
+    <text x="312" y="726">src/state/AppStateStore.ts</text>
+    <text x="710" y="702">multi-transport remote integration, auth/session handling,</text>
+    <text x="710" y="726">plus the shared session control plane for tasks and plugins</text>
+    <rect x="1140" y="686" width="112" height="40" rx="20" fill="#FEF3C7"/>
+    <text x="1160" y="712" fill="#92400E" font-weight="700">active+</text>
+  </g>
+
+  <rect x="1230" y="246" width="22" height="22" rx="11" fill="#166534" opacity="0"/>
+  <text x="64" y="788" fill="#64748B" font-size="16" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">Interpretation: most surfaces are active, but MCP and control-plane behavior carry the highest operational complexity.</text>
+</svg>

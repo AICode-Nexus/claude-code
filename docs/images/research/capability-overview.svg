@@ -1,0 +1,87 @@
+<svg width="1400" height="920" viewBox="0 0 1400 920" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Claude Code capability overview</title>
+  <desc id="desc">Three-column overview of runtime orchestration, capability surfaces, and control plane constraints in the reconstructed Claude Code repository.</desc>
+  <rect width="1400" height="920" fill="#FFFDF8"/>
+  <rect x="40" y="40" width="1320" height="840" rx="28" fill="#FFFFFF" stroke="#F1E7D0" stroke-width="2"/>
+  <text x="70" y="100" fill="#0F172A" font-size="34" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-weight="700">Claude Code Capability Atlas</text>
+  <text x="70" y="135" fill="#64748B" font-size="18" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">Current repository view: runtime orchestration, extension surfaces, and control-plane constraints</text>
+
+  <rect x="70" y="180" width="390" height="620" rx="24" fill="#FFF7ED" stroke="#F59E0B" stroke-width="2"/>
+  <text x="95" y="225" fill="#B45309" font-size="24" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-weight="700">1. Runtime &amp; Turn Execution</text>
+
+  <rect x="95" y="255" width="340" height="92" rx="18" fill="#FFFFFF" stroke="#FCD39B"/>
+  <text x="120" y="290" fill="#0F172A" font-size="21" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-weight="700">cli.tsx</text>
+  <text x="120" y="320" fill="#475569" font-size="16" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">feature() =&gt; false, macros, fast-path startup</text>
+
+  <rect x="95" y="365" width="340" height="110" rx="18" fill="#FFFFFF" stroke="#FCD39B"/>
+  <text x="120" y="400" fill="#0F172A" font-size="21" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-weight="700">main.tsx</text>
+  <text x="120" y="430" fill="#475569" font-size="16" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">startup orchestration, mode split, settings,</text>
+  <text x="120" y="455" fill="#475569" font-size="16" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">MCP/bootstrap, REPL or print dispatch</text>
+
+  <rect x="95" y="495" width="160" height="120" rx="18" fill="#FFFFFF" stroke="#FCD39B"/>
+  <text x="118" y="530" fill="#0F172A" font-size="20" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-weight="700">REPL path</text>
+  <text x="118" y="560" fill="#475569" font-size="15" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">Ink UI</text>
+  <text x="118" y="584" fill="#475569" font-size="15" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">query.ts</text>
+
+  <rect x="275" y="495" width="160" height="120" rx="18" fill="#FFFFFF" stroke="#FCD39B"/>
+  <text x="298" y="530" fill="#0F172A" font-size="20" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-weight="700">Print path</text>
+  <text x="298" y="560" fill="#475569" font-size="15" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">cli/print.ts</text>
+  <text x="298" y="584" fill="#475569" font-size="15" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">QueryEngine</text>
+
+  <rect x="95" y="640" width="340" height="130" rx="18" fill="#FFFFFF" stroke="#FCD39B"/>
+  <text x="120" y="675" fill="#0F172A" font-size="21" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-weight="700">query.ts shared loop</text>
+  <text x="120" y="705" fill="#475569" font-size="16" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">streaming response, tool_use handling, compaction,</text>
+  <text x="120" y="730" fill="#475569" font-size="16" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">fallback, stop hooks, token budget, recovery</text>
+
+  <rect x="505" y="180" width="390" height="620" rx="24" fill="#EFF6FF" stroke="#60A5FA" stroke-width="2"/>
+  <text x="530" y="225" fill="#1D4ED8" font-size="24" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-weight="700">2. Capability Surfaces</text>
+
+  <rect x="530" y="255" width="340" height="92" rx="18" fill="#FFFFFF" stroke="#BFDBFE"/>
+  <text x="555" y="290" fill="#0F172A" font-size="21" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-weight="700">tools.ts</text>
+  <text x="555" y="320" fill="#475569" font-size="16" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">built-in tools, deny rules, REPL mode filtering,</text>
+  <text x="555" y="345" fill="#475569" font-size="16" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">MCP tool assembly</text>
+
+  <rect x="530" y="365" width="340" height="110" rx="18" fill="#FFFFFF" stroke="#BFDBFE"/>
+  <text x="555" y="400" fill="#0F172A" font-size="21" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-weight="700">commands.ts</text>
+  <text x="555" y="430" fill="#475569" font-size="16" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">built-in commands + bundled skills + plugin skills</text>
+  <text x="555" y="455" fill="#475569" font-size="16" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">+ workflow commands + dynamic skills</text>
+
+  <rect x="530" y="495" width="340" height="120" rx="18" fill="#FFFFFF" stroke="#BFDBFE"/>
+  <text x="555" y="530" fill="#0F172A" font-size="21" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-weight="700">loadSkillsDir.ts</text>
+  <text x="555" y="560" fill="#475569" font-size="16" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">frontmatter parsing, prompt capability model,</text>
+  <text x="555" y="585" fill="#475569" font-size="16" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">dynamic discovery, conditional activation</text>
+
+  <rect x="530" y="640" width="340" height="130" rx="18" fill="#FFFFFF" stroke="#BFDBFE"/>
+  <text x="555" y="675" fill="#0F172A" font-size="21" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-weight="700">services/mcp/client.ts</text>
+  <text x="555" y="705" fill="#475569" font-size="16" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">SSE / HTTP / WS / IDE transports, auth, timeout,</text>
+  <text x="555" y="730" fill="#475569" font-size="16" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">tool + prompt injection into the model surface</text>
+
+  <rect x="940" y="180" width="390" height="620" rx="24" fill="#F0FDF4" stroke="#4ADE80" stroke-width="2"/>
+  <text x="965" y="225" fill="#15803D" font-size="24" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-weight="700">3. Control Plane &amp; Constraints</text>
+
+  <rect x="965" y="255" width="340" height="120" rx="18" fill="#FFFFFF" stroke="#BBF7D0"/>
+  <text x="990" y="290" fill="#0F172A" font-size="21" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-weight="700">AppStateStore.ts</text>
+  <text x="990" y="320" fill="#475569" font-size="16" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">tasks, MCP, plugins, file history, attribution,</text>
+  <text x="990" y="345" fill="#475569" font-size="16" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">session hooks, bridge, REPL VM context</text>
+
+  <rect x="965" y="395" width="340" height="92" rx="18" fill="#FFFFFF" stroke="#BBF7D0"/>
+  <text x="990" y="430" fill="#0F172A" font-size="21" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-weight="700">Permission context</text>
+  <text x="990" y="460" fill="#475569" font-size="16" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">deny rules, mode switching, safety boundary</text>
+
+  <rect x="965" y="505" width="340" height="120" rx="18" fill="#FFFFFF" stroke="#BBF7D0"/>
+  <text x="990" y="540" fill="#0F172A" font-size="21" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-weight="700">Feature layering</text>
+  <text x="990" y="570" fill="#475569" font-size="16" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">feature() =&gt; false, runtime gates,</text>
+  <text x="990" y="595" fill="#475569" font-size="16" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">USER_TYPE guard, env-based enablement</text>
+
+  <rect x="965" y="645" width="340" height="125" rx="18" fill="#FFFFFF" stroke="#BBF7D0"/>
+  <text x="990" y="680" fill="#0F172A" font-size="21" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-weight="700">Research caveat</text>
+  <text x="990" y="710" fill="#475569" font-size="16" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">reverse-engineered noise, dormant branches,</text>
+  <text x="990" y="735" fill="#475569" font-size="16" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">stubs, and docs drift must be separated</text>
+
+  <path d="M435 550H495" stroke="#D97706" stroke-width="4" stroke-linecap="round"/>
+  <path d="M870 550H930" stroke="#2563EB" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="495" cy="550" r="6" fill="#D97706"/>
+  <circle cx="930" cy="550" r="6" fill="#2563EB"/>
+
+  <text x="70" y="845" fill="#64748B" font-size="16" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">Reading rule: treat active path, gated path, and stub path as different categories.</text>
+</svg>

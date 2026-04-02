@@ -45,7 +45,8 @@
     "test": "bun test",
     "check:unused": "knip-bun",
     "health": "bun run scripts/health-check.ts",
-    "docs:dev": "npx mintlify dev"
+    "docs:dev": "node scripts/docs-dev.mjs",
+    "docs:export": "node scripts/export-docs-site.mjs"
   },
   "dependencies": {},
   "devDependencies": {

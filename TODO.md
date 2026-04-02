@@ -13,7 +13,7 @@
 - [x] `@ant/computer-use-swift` — Computer Use Swift 原生模块 (macOS JXA/screencapture 实现)
 - [x] `@ant/computer-use-mcp` — Computer Use MCP 服务 (类型安全 stub + sentinel apps + targetImageSize)
 - [x] `@ant/computer-use-input` — Computer Use 输入模块 (macOS AppleScript/JXA 实现)
-<!-- - [ ] `@ant/claude-for-chrome-mcp` — Chrome MCP 扩展 -->
+- [ ] `@ant/claude-for-chrome-mcp` — Chrome MCP 扩展（暂未实现）
 
 ## 工程化能力
 
