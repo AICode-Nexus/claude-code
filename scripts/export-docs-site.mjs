@@ -5,9 +5,7 @@ import { basename, join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 
 const args = process.argv.slice(2);
-const mobileZoomLockStyle =
-  '<style id="disable-mobile-zoom-style">html,body{touch-action:pan-x pan-y;}</style>';
-const mobileZoomLockScript = `<script id="disable-mobile-zoom">(function(){let lastTouchEnd=0;const cancel=event=>event.preventDefault();document.addEventListener('gesturestart',cancel,{passive:false});document.addEventListener('gesturechange',cancel,{passive:false});document.addEventListener('gestureend',cancel,{passive:false});document.addEventListener('touchstart',event=>{if(event.touches.length>1){cancel(event);}}, {passive:false});document.addEventListener('touchend',event=>{const now=Date.now();if(now-lastTouchEnd<=300){cancel(event);}lastTouchEnd=now;},{passive:false});})();</script>`;
+const mobileZoomLockScript = `<script id="disable-mobile-zoom">(function(){const LOCKED_VIEWPORT='width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover';const IN_APP_UA_PATTERN=/(MicroMessenger|QQ\\/|Weibo|AlipayClient|AliApp|DingTalk|Lark|Feishu|NewsArticle|Toutiao|BytedanceWebview|aweme|Douyin|Kwai|XiaoHongShu)/i;function hasLockOverride(){try{const params=new URLSearchParams(window.location.search);const override=params.get('lockZoom');return override==='1'||override==='true'||override==='yes';}catch{return false;}}function isLikelyInAppBrowser(){const ua=navigator.userAgent||'';const isAppleMobile=/iPhone|iPad|iPod/i.test(ua);const isEmbeddedIOSWebView=isAppleMobile&&/AppleWebKit/i.test(ua)&&!/Safari/i.test(ua);const isAndroidWebView=/\\bwv\\b/i.test(ua);return IN_APP_UA_PATTERN.test(ua)||isEmbeddedIOSWebView||isAndroidWebView;}function lockViewport(){const head=document.head||document.getElementsByTagName('head')[0];if(!head){return;}let viewport=document.querySelector('meta[name="viewport"]');if(!viewport){viewport=document.createElement('meta');viewport.setAttribute('name','viewport');head.prepend(viewport);}viewport.setAttribute('content',LOCKED_VIEWPORT);}function installGestureGuards(){let lastTouchEnd=0;const cancel=event=>event.preventDefault();document.addEventListener('gesturestart',cancel,{passive:false});document.addEventListener('gesturechange',cancel,{passive:false});document.addEventListener('gestureend',cancel,{passive:false});document.addEventListener('touchstart',event=>{if(event.touches.length>1){cancel(event);}}, {passive:false});document.addEventListener('touchmove',event=>{if(event.touches.length>1||typeof event.scale==='number'&&event.scale!==1){cancel(event);}}, {passive:false});document.addEventListener('touchend',event=>{const now=Date.now();if(now-lastTouchEnd<=300){cancel(event);}lastTouchEnd=now;},{passive:false});}if(!hasLockOverride()&&!isLikelyInAppBrowser()){return;}lockViewport();installGestureGuards();})();</script>`;
 
 function getArgValue(flag, defaultValue) {
   const index = args.indexOf(flag);
@@ -62,13 +60,7 @@ function rewriteTextAsset(content, basePath) {
   const rootHrefPattern = /(href\s*[=:]\s*["'])\/(?=["'])/g;
   const cssUrlPattern =
     /url\(\s*\/(?=(_next\/|docs\/|favicons\/|sitemap\.xml|robots\.txt))/g;
-  const viewportPattern =
-    /(<meta name="viewport" content=")width=device-width,\s*initial-scale=1,\s*viewport-fit=cover(")/g;
-
-  let rewritten = content.replace(
-    viewportPattern,
-    '$1width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover$2'
-  );
+  let rewritten = content;
 
   if (basePath) {
     rewritten = rewritten.replace(pathPrefixPattern, `$1${basePath}/`);
@@ -77,10 +69,6 @@ function rewriteTextAsset(content, basePath) {
   }
 
   if (rewritten.includes('</head>')) {
-    if (!rewritten.includes('id="disable-mobile-zoom-style"')) {
-      rewritten = rewritten.replace('</head>', `${mobileZoomLockStyle}</head>`);
-    }
-
     if (!rewritten.includes('id="disable-mobile-zoom"')) {
       rewritten = rewritten.replace('</head>', `${mobileZoomLockScript}</head>`);
     }
