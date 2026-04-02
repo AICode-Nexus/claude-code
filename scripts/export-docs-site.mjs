@@ -5,6 +5,7 @@ import { basename, join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 
 const args = process.argv.slice(2);
+const mobileZoomLockScript = `<script id="disable-mobile-zoom">(function(){let lastTouchEnd=0;const cancel=event=>event.preventDefault();document.addEventListener('gesturestart',cancel,{passive:false});document.addEventListener('gesturechange',cancel,{passive:false});document.addEventListener('gestureend',cancel,{passive:false});document.addEventListener('touchstart',event=>{if(event.touches.length>1){cancel(event);}}, {passive:false});document.addEventListener('touchend',event=>{const now=Date.now();if(now-lastTouchEnd<=300){cancel(event);}lastTouchEnd=now;},{passive:false});})();</script>`;
 
 function getArgValue(flag, defaultValue) {
   const index = args.indexOf(flag);
@@ -71,6 +72,10 @@ function rewriteTextAsset(content, basePath) {
     rewritten = rewritten.replace(pathPrefixPattern, `$1${basePath}/`);
     rewritten = rewritten.replace(rootHrefPattern, `$1${basePath}/`);
     rewritten = rewritten.replace(cssUrlPattern, `url(${basePath}/`);
+  }
+
+  if (rewritten.includes('</head>') && !rewritten.includes('id="disable-mobile-zoom"')) {
+    rewritten = rewritten.replace('</head>', `${mobileZoomLockScript}</head>`);
   }
 
   return rewritten;
