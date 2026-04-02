@@ -38,6 +38,7 @@ The skill should help a future agent quickly understand what matters in this rep
 - Include lightweight deeper analysis as a secondary layer
 - Distinguish active runtime paths from dead, stubbed, or feature-disabled paths
 - Identify documentation drift between code and docs when present
+- Add an `autoresearch` quality gate that self-checks analysis quality and triggers one bounded targeted follow-up research pass when needed
 - Write a dated analysis artifact to the repository by default
 - Stay small enough to maintain and expand over time
 
@@ -50,6 +51,7 @@ The skill should help a future agent quickly understand what matters in this rep
 - No repository-agnostic mega-framework in v1
 - No helper script in v1 unless the skill later proves too token-heavy or unstable
 - No additional generated artifacts in v1 beyond the dated `docs/analysis/*` report
+- No unbounded recursive research loop; autoresearch must be capped and converge quickly
 
 ## User Experience
 
@@ -59,6 +61,7 @@ The skill runs in the current conversation and returns:
 
 1. A compact terminal summary with the most useful project facts
 2. A generated Markdown report at `docs/analysis/YYYY-MM-DD-project-analysis.md`
+3. Explicit confidence notes or remaining gaps when the autoresearch quality gate still finds unresolved uncertainty
 
 The skill should feel like a repository orientation workflow, not a generic audit.
 
@@ -75,6 +78,7 @@ Initial file layout:
 ├── SKILL.md
 └── references/
     ├── checklist.md
+    ├── quality-gate.md
     ├── report-template.md
     └── repo-notes.md
 ```
@@ -83,6 +87,7 @@ Initial file layout:
 
 - `SKILL.md` stays focused on workflow and invocation behavior
 - `references/checklist.md` holds reusable analysis dimensions
+- `references/quality-gate.md` defines the self-check rubric and bounded autoresearch retry rules
 - `references/report-template.md` standardizes output quality
 - `references/repo-notes.md` captures repository-specific truths that should shape the analysis
 
@@ -200,12 +205,49 @@ Success criteria:
 
 ### 6. Produce outputs
 
-Return a short terminal summary, then write a full report to `docs/analysis/YYYY-MM-DD-project-analysis.md`.
+Draft a short terminal summary and a full report in-memory as provisional outputs, then hold them until the quality gate passes or the bounded autoresearch retry is exhausted.
+
+Success criteria:
+
+- the draft output is complete enough to be evaluated by the quality gate
+
+### 7. Run autoresearch quality gate
+
+Evaluate the provisional summary and report against a dedicated self-check rubric.
+
+The quality gate should verify:
+
+- every major architectural claim has a concrete evidence source in code or docs
+- the active runtime path is described specifically, not vaguely
+- dead, gated, or stubbed paths are explicitly labeled as such
+- required output sections are present
+- documentation drift is called out when found
+- obvious contradictions or unsupported inferences are either fixed or downgraded to uncertainty notes
+
+If the gate fails, the skill should run one bounded targeted `autoresearch` pass:
+
+- read missing source files
+- grep for confirming evidence
+- reconcile contradictions
+- revise the provisional summary and report once
+
+If uncertainty remains after the bounded retry, the skill should keep the final output but surface the remaining gaps explicitly.
+
+Success criteria:
+
+- the final output is better than the initial draft
+- unsupported claims are reduced or clearly marked
+- the workflow does not loop indefinitely
+
+### 8. Produce final outputs
+
+Return the final terminal summary, then write the finalized report to `docs/analysis/YYYY-MM-DD-project-analysis.md`.
 
 Success criteria:
 
 - the terminal output is skimmable
 - the report is stable, useful, and easy to reference later
+- any residual uncertainty is visible rather than hidden
 
 ## Output Design
 
@@ -217,6 +259,7 @@ The skill should always produce:
 - main execution path in 3 to 6 nodes
 - key files and directories
 - primary risks or caveats
+- confidence level or unresolved gaps when relevant
 - suggested reading order
 - report path confirmation
 
@@ -234,10 +277,12 @@ The default report should contain:
 6. `Extension Points`
 7. `Known Noise And Constraints`
 8. `Documentation Drift`
-9. `Suggested Reading Order`
-10. `Follow-up Questions`
+9. `Confidence And Remaining Gaps`
+10. `Suggested Reading Order`
+11. `Follow-up Questions`
 
 `Documentation Drift` must be a dedicated section whenever docs and code disagree.
+`Confidence And Remaining Gaps` should summarize what the quality gate verified, what required autoresearch, and what still needs human confirmation.
 
 ## Reference File Responsibilities
 
@@ -259,6 +304,23 @@ Expected content:
 - risk/drift checklist
 - output requirements checklist
 
+### `references/quality-gate.md`
+
+Purpose:
+
+- define the self-check rubric for analysis quality
+- specify when the skill should trigger bounded autoresearch
+- force explicit reporting of uncertainty instead of silent guessing
+
+Expected content:
+
+- evidence coverage checks
+- hot-path specificity checks
+- drift and contradiction checks
+- required-section completeness checks
+- retry rules for one bounded autoresearch pass
+- final-output rules when uncertainty remains
+
 ### `references/report-template.md`
 
 Purpose:
@@ -272,6 +334,7 @@ Expected content:
 - short instructions per heading
 - constraints on tone and brevity
 - rule that drift findings must be explicit
+- rule that confidence and remaining gaps must be explicit after the quality gate
 
 ### `references/repo-notes.md`
 
@@ -309,6 +372,7 @@ Behavior rules:
 - do not fail the workflow because one expected file is absent
 - do not present speculative conclusions as facts
 - do not treat decompilation type noise as proof of runtime failure
+- do not silently suppress uncertainty after the autoresearch quality gate; surface it in the final output
 
 ## Why Inline Instead Of Fork
 
@@ -340,11 +404,14 @@ Implementation is complete when:
 - `/project-analysis` is available as a repository-local skill
 - it runs without arguments
 - it uses only the planned minimal tool set
+- it drafts and then quality-checks its own analysis before finalizing
+- it performs one bounded autoresearch pass when the self-check finds meaningful evidence or coverage gaps
 - it produces a concise terminal summary
 - it writes `docs/analysis/YYYY-MM-DD-project-analysis.md`
 - the report contains all required sections
 - the report correctly distinguishes active code paths from gated or noisy ones
 - the workflow explicitly surfaces documentation drift when found
+- the workflow explicitly surfaces remaining uncertainty when the quality gate cannot fully resolve it
 
 ## Verification Plan
 
@@ -355,9 +422,11 @@ After implementation, verify by invoking the skill inside this repository and ch
 - the summary references the real project structure
 - the report includes at least one concrete runtime-path explanation
 - the report does not overstate disabled feature branches as active functionality
+- the quality gate can identify at least one weak spot in a draft and either improve it via autoresearch or surface it as a remaining gap
 
 ## Open Questions
 
 - Should a future v2 support focused modes such as `/project-analysis tools` or `/project-analysis skills`?
 - Should later iterations add a lightweight facts-only helper script for stability?
 - Should the generated report eventually include clickable file references for every major module?
+- Should the final user-facing summary expose autoresearch details every time, or only when the quality gate had to intervene?
