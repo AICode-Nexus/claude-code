@@ -53,16 +53,25 @@ function runCommand(command, commandArgs, options = {}) {
   });
 }
 
-function replaceQuotedPaths(content, basePath) {
+function rewriteTextAsset(content, basePath) {
   const pathPrefixPattern =
     /(["'`])\/(?=(_next\/|docs\/|favicons\/|sitemap\.xml|robots\.txt))/g;
   const rootHrefPattern = /(href\s*[=:]\s*["'])\/(?=["'])/g;
   const cssUrlPattern =
     /url\(\s*\/(?=(_next\/|docs\/|favicons\/|sitemap\.xml|robots\.txt))/g;
+  const viewportPattern =
+    /(<meta name="viewport" content=")width=device-width,\s*initial-scale=1,\s*viewport-fit=cover(")/g;
 
-  let rewritten = content.replace(pathPrefixPattern, `$1${basePath}/`);
-  rewritten = rewritten.replace(rootHrefPattern, `$1${basePath}/`);
-  rewritten = rewritten.replace(cssUrlPattern, `url(${basePath}/`);
+  let rewritten = content.replace(
+    viewportPattern,
+    '$1width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover$2'
+  );
+
+  if (basePath) {
+    rewritten = rewritten.replace(pathPrefixPattern, `$1${basePath}/`);
+    rewritten = rewritten.replace(rootHrefPattern, `$1${basePath}/`);
+    rewritten = rewritten.replace(cssUrlPattern, `url(${basePath}/`);
+  }
 
   return rewritten;
 }
@@ -98,7 +107,7 @@ async function rewriteSitePaths(rootDir, basePath) {
       }
 
       const original = await readFile(entryPath, 'utf8');
-      const rewritten = replaceQuotedPaths(original, basePath);
+      const rewritten = rewriteTextAsset(original, basePath);
 
       if (rewritten !== original) {
         await writeFile(entryPath, rewritten, 'utf8');
@@ -174,9 +183,7 @@ async function main() {
       });
     }
 
-    if (basePath) {
-      await rewriteSitePaths(outputDir, basePath);
-    }
+    await rewriteSitePaths(outputDir, basePath);
 
     await writeFile(join(outputDir, '.nojekyll'), '', 'utf8');
     console.log(`Exported static docs to ${outputDir}${basePath ? ` with base path ${basePath}` : ''}`);
