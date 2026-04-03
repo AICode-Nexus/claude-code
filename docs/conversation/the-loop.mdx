@@ -1,203 +1,204 @@
 ---
-title: "Agentic Loop：AI 自主循环的核心机制"
-description: "深入解析 Claude Code 的 query() 异步生成器循环——从流式 API 调用、工具并行执行、上下文压缩、错误恢复到终止条件的完整状态机，基于 src/query.ts 的源码级分析。"
-keywords: ["Agentic Loop", "query loop", "tool_use", "状态机", "auto-compact", "streaming", "recovery"]
+title: "Agentic Loop：多轮 query() 为什么能持续推进"
+description: "把 Claude Code 的主循环写成一张可验证的控制平面图：从 `queryLoop()` 的 while(true)、预处理链、流式采样、工具执行，到恢复分支、继续条件与终止条件。"
+keywords: ["Agentic Loop", "queryLoop", "query.ts", "tool_use", "max_output_tokens", "stop hook", "token budget"]
 ---
 
-{/* 本章目标：基于 src/query.ts 揭示 Agentic Loop 的完整状态机 */}
+## 一句话结论
 
-## 什么是 Agentic Loop
+Claude Code 的 Agentic Loop 不是“模型反复思考”的抽象说法，而是 `src/query.ts` 里一台显式维护 `State`、在每一轮末尾决定 `continue` 还是 `return` 的多轮控制器；真正让它可研究的，不是 `while (true)` 本身，而是每一种继续原因都会改写下一轮真正看到的消息面。
 
-传统聊天机器人：你问一句，它答一句。  
-Claude Code 不一样：你说一个需求，它可能连续执行十几步操作才给你最终结果。
+## 30 秒摘要
 
-这背后的机制叫做 **Agentic Loop**（智能体循环），核心实现在 `src/query.ts` 的 `queryLoop()` 异步生成器函数（第 241 行）。它是一个 `while(true)` 无限循环，每次迭代代表一次"思考→行动→观察"周期。
+这页讲的是多轮主循环这件事本身，不是某一轮里具体每个局部变量怎么变。`queryLoop()` 定义在 `src/query.ts:241`，真正进入循环在 `src/query.ts:307`。每轮先做消息预算与压缩，再调用模型流式采样，再根据 `tool_use`、恢复型错误、stop hook、token budget 和 `maxTurns` 决定是结束，还是把新状态拼回去跑下一轮。
 
-<Frame caption="Agentic Loop 循环示意">
-  <img src="/docs/images/agentic-loop.png" alt="Agentic Loop 循环图" />
-</Frame>
+如果你只记一个判断标准，就是这句：**Claude Code 不是“模型先计划完，再批量执行”；它是每拿到一批新观察，就重写一次下一轮输入。**
 
-## 循环的完整结构
+## 状态标签总览
 
-`queryLoop()` 的每次迭代（`src/query.ts:307` `while(true)`）包含以下阶段：
+| 子路径 / 机制 | 状态标签 | 当前含义 |
+|---|---|---|
+| `queryLoop()` 主循环、工具继续、终止条件 | `external build active` | 当前 external build 的真实多轮控制器 |
+| `StreamingToolExecutor` 边流式边起工具 | `external build active` | 当前仓库真实活跃 |
+| `max_output_tokens` 扩槽与续写恢复 | `external build active` | 当前 `query.ts` 明确实现 |
+| `FallbackTriggeredError` 模型 fallback | `external build active` | 路径真实存在，是否触发取决于 fallback model 配置 |
+| stop hook 阻塞后继续 | `external build active` | 当前 external build 真实路径 |
+| token budget continuation / diminishing returns | `feature-gated` | 依赖 `feature('TOKEN_BUDGET')` |
+| context collapse overflow drain | `feature-gated` | 依赖 `feature('CONTEXT_COLLAPSE')` |
+| reactive compact overflow/media 恢复 | `stubbed/removed` | `query.ts` 保留分支，但当前仓库实现文件是 stub，不应写成 live 能力 |
 
-### 阶段 1：上下文预处理（Pre-Processing Pipeline）
+## 为什么存在
 
-在调用 API 之前，依次执行 5 个压缩/优化步骤：
+如果系统只是“一问一答”，完全没必要做这么重的循环控制。之所以会长成现在这样，是因为 Claude Code 必须同时解决四件事：
 
+- 工具结果不可预知。命令输出、文件内容、权限拦截、MCP 返回值都只能在上一轮结束后才知道。
+- 上下文不是静态的。每一轮都可能因为工具结果过大、历史太长或缓存编辑而改变下一轮输入面。
+- 错误不总该直接报废整轮。`max_output_tokens`、stream fallback、模型 fallback、stop hook 阻塞都更适合被改写成“继续一次”。
+- 主循环还承担控制平面职责。工具执行完以后，不只是把 `tool_result` 接回去，它还会插入附件、消费队列消息、吸收 memory prefetch、刷新工具池，再生成下一轮状态。
+
+所以 Agentic Loop 的本质不是“让 AI 多想几次”，而是让系统把真实世界的新观测不断并回 prompt。
+
+## 正常链路
+
+```mermaid
+flowchart TD
+  start["state.messages"] --> boundary["getMessagesAfterCompactBoundary()"]
+  boundary --> budget["applyToolResultBudget()"]
+  budget --> snip["snipCompactIfNeeded() if enabled"]
+  snip --> micro["microcompact()"]
+  micro --> collapse["contextCollapse.applyCollapsesIfNeeded() if enabled"]
+  collapse --> auto["autocompact()"]
+  auto --> call["deps.callModel() stream"]
+  call --> collect["收 assistant / tool_use / partial tool results"]
+  collect --> follow{"needsFollowUp?"}
+  follow -->|no| recover["413 / media / max_output_tokens 恢复判定"]
+  recover --> hooks["stop hooks / token budget / completed"]
+  follow -->|yes| tools["StreamingToolExecutor or runTools()"]
+  tools --> sidecar["附件、memory、队列、refreshTools"]
+  sidecar --> next["构造 next State"]
+  next --> start
 ```
+
+这条图里最容易被漏掉的，不是 `tool_use`，而是两件事：
+
+- 预处理链发生在每一轮，而不是整个会话一开始只跑一次。
+- 工具执行之后还有一段“控制平面收尾”，下一轮看到的不只是 `tool_result`，还可能包括附件、队列消息、memory 和刷新后的工具列表。
+
+## 关键结构 / 状态
+
+`query.ts` 顶部定义的 `State` 已经把这台循环真正关心什么写得很直白：
+
+| 字段 | 作用 | 为什么重要 |
+|---|---|---|
+| `messages` | 下一轮真正发给模型的消息历史 | 主循环不是保存“日志”，而是在维护可继续的 prompt 面 |
+| `toolUseContext` | 工具池、权限、AppState、abort controller 等总入口 | 工具执行和模型调用共用这份上下文 |
+| `autoCompactTracking` | 跟踪最近一次 compact 与失败计数 | 决定 autocompact 何时再触发 |
+| `maxOutputTokensRecoveryCount` | 限制续写恢复次数 | 防止 `max_output_tokens` 无限重试 |
+| `hasAttemptedReactiveCompact` | 记录是否已经试过 reactive compact | 防止 prompt-too-long / media 错误死循环 |
+| `maxOutputTokensOverride` | 暂时把输出槽从默认值抬高 | 这是“扩槽重试”和“注入续写消息”之间的分水岭 |
+| `pendingToolUseSummary` | 把工具摘要异步生成并延后到下一轮前输出 | 说明循环里还有并行的旁路工作 |
+| `stopHookActive` | 标记当前是不是 stop hook 驱动的重跑 | 影响后续 stop hook 处理 |
+| `turnCount` | 已经跑了多少轮 | 用于 `maxTurns` 和可观测性 |
+| `transition` | 上一轮为什么继续 | 这是理解恢复路径最关键的证据字段 |
+
+除了 `State`，还要盯住两类“继续原因”：
+
+| `transition.reason` | 属于哪类继续 | 当前意义 |
+|---|---|---|
+| `next_turn` | 正常继续 | 有 `tool_use`，工具结果回来后进入下一轮 |
+| `max_output_tokens_escalate` | 恢复型继续 | 同一请求先抬高输出槽再试 |
+| `max_output_tokens_recovery` | 恢复型继续 | 追加 meta message 要求模型直接续写 |
+| `collapse_drain_retry` | 恢复型继续 | 先排空 staged collapses 再试，但依赖 feature gate |
+| `reactive_compact_retry` | 恢复型继续 | 设计存在，但当前仓库实现不应写成 live |
+| `stop_hook_blocking` | 策略纠偏继续 | 先拼回 blocking errors 再让模型重答 |
+| `token_budget_continuation` | 成本控制继续 | 预算提醒后再给一轮机会 |
+
+这也是为什么这页必须和 [单轮状态机](/docs/conversation/single-turn-state-machine) 分开读：单轮页讲一次迭代内部怎么走，这页讲为什么系统会一轮又一轮地改写自身状态。
+
+## 正常链路拆开看
+
+从源码顺序看，一轮主循环的“正常路径”大致可以拆成五段：
+
+1. `src/query.ts:365-468` 先从 compact boundary 之后取可见历史，然后依次跑 `applyToolResultBudget()`、`microcompact()`、`contextCollapse.applyCollapsesIfNeeded()`、`autocompact()`。这一步决定本轮到底拿什么去问模型。
+2. `src/query.ts:551-866` 初始化 `assistantMessages`、`toolUseBlocks`、`needsFollowUp` 和 `StreamingToolExecutor`，再进入 `deps.callModel()` 的流式循环。
+3. 流中一旦发现 `tool_use`，`needsFollowUp` 立刻变成 `true`，并尽可能让 `StreamingToolExecutor` 先把工具跑起来；所以工具并发不是“流结束之后才开始”，而是已经嵌进流里。
+4. 如果本轮最后 `needsFollowUp === false`，就进入 `src/query.ts:1065-1360` 的恢复、stop hook、token budget 与完成路径。
+5. 如果 `needsFollowUp === true`，就进入 `src/query.ts:1383-1730`：取回剩余工具结果，追加附件与 memory，刷新工具池，最后把 `messages + assistantMessages + toolResults` 拼成下一轮 `state.messages`。
+
+这五段一起看，才会明白 Agentic Loop 为什么更像“控制平面”而不是“简单递归调用”。
+
+## 一个实际例子
+
+假设用户说：“检查文档站导出为什么卡住，并修掉会导致页面 500 的问题。”
+
+一条典型的多轮路径会长这样：
+
+1. 第 1 轮，模型先调用 `Glob` 或 `Grep` 找到可疑页面和导出脚本。因为出现了 `tool_use`，本轮不会结束。
+2. 第 2 轮，模型基于搜索结果调用 `Read`、`Bash`，读 `the-loop.mdx` 和导出日志。工具结果被接回消息面，形成新的上下文。
+3. 第 3 轮，模型发现页面结构损坏，调用 `Edit` 修正文档，再调用 `Bash` 重跑导出。此时循环里除了 `tool_result`，还可能额外吸收“文件已编辑”的附件消息。
+4. 第 4 轮，如果导出通过、模型不再发 `tool_use`，就进入 stop hook 与完成路径，最后返回 `completed`。
+
+这里真正关键的不是“跑了 4 轮”，而是每一轮看到的世界都不同：
+
+- 第 1 轮看到的是原始用户需求。
+- 第 2 轮看到的是代码搜索结果。
+- 第 3 轮看到的是具体文件内容和报错。
+- 第 4 轮看到的是修复后的验证结果。
+
+这正是 Agentic Loop 必须存在的理由。
+
+## 失败与恢复
+
+多轮循环不是只有“有工具就继续”这一条路，`query.ts` 还把多种失败改写成了继续条件。
+
+| 问题 | 当前仓库的处理方式 | 会不会继续 |
+|---|---|---|
+| `max_output_tokens` | 先尝试把输出槽提升到 `ESCALATED_MAX_TOKENS`，不够再注入“直接续写”meta message | 会 |
+| stream 中途 fallback | tombstone 已收集的半成品 assistant messages，重建 `StreamingToolExecutor` 后重试 | 会 |
+| repeated 529 触发模型 fallback | 捕获 `FallbackTriggeredError`，切换到 fallback model，再清理旧 tool use 状态 | 会 |
+| stop hook 给出 blocking errors | 把 blocking errors 追加到消息面后重跑 | 会 |
+| token budget 判断还能继续但需要收尾提醒 | 注入 nudge message 再给一轮 | 会，且是 feature-gated |
+| 413 prompt-too-long | 先看 context collapse drain，再看 reactive compact；但当前仓库不应把 reactive compact 写成 live 路径 | 设计上会，当前仓库要保守写 |
+| 图片/媒体尺寸错误 | 会先尝试 reactive compact 媒体恢复分支；当前仓库同样不能写成稳定 live 能力 | 设计上会，当前仓库要保守写 |
+
+可以把恢复体系理解成一个原则：**只要错误还能转译成“下一轮能理解的状态”，循环就尽量不直接报废。**
+
+一个最典型的恢复例子是 `max_output_tokens`：
+
+1. 流式阶段先把这个错误暂扣，不立刻对外抛。
+2. 如果本轮还没用过 `maxOutputTokensOverride`，先升级输出槽再跑同一请求。
+3. 如果升级后还不够，就在消息尾部加一条 meta message，明确要求模型从中断处继续，不要道歉也不要 recap。
+4. 只有恢复次数耗尽，才真正把 withheld error 放出来。
+
+这条链路说明，Claude Code 把“回答太长”视为资源约束，不是推理失败。
+
+## 边界与误读
+
+- Agentic Loop 不是 `QueryEngine` 的同义词。多轮主循环真正落在 `src/query.ts`；有些入口会在外层包装，但 loop 本体在这里。
+- `while (true)` 不等于“理论上无限跑”。`completed`、`aborted_streaming`、`aborted_tools`、`max_turns`、`hook_stopped`、`prompt_too_long` 等都会终止。
+- `needsFollowUp === false` 也不一定立刻结束，因为后面还可能进入 `max_output_tokens`、stop hook、token budget 等继续路径。
+- `tool_use` 不是唯一继续原因。恢复型继续和策略纠偏继续同样真实存在。
+- 看到 `reactiveCompact.tryReactiveCompact()`，不能直接写成“当前 external build 已稳定支持即时压缩恢复”；当前 reverse-engineered 仓库里实现文件是 stub。
+- `contextCollapse` 相关恢复也不能写成默认 live 路径，因为它挂在 `feature('CONTEXT_COLLAPSE')` 后面。
+- “流式工具执行”也不是另一个独立回合系统；它只是把部分工具执行提前嵌进本轮 stream。
+
+## 场景变体
+
+| 场景 | 主循环最关键的分支 |
+|---|---|
+| 普通问答 | 无 `tool_use`，直接走 completed |
+| 文件修改或调试任务 | `next_turn` 是主路径，工具结果决定下一轮 |
+| 长回答 / 长计划 | `max_output_tokens_escalate` 与 `max_output_tokens_recovery` 更重要 |
+| 高负载或 provider 问题 | streaming fallback、model fallback 更重要 |
+| 有 stop hooks 的治理环境 | `stop_hook_blocking` 会把“当前回答不合规”转成下一轮输入 |
+| 预算敏感环境 | `token_budget_continuation` 和 diminishing returns 会提前收尾 |
+| 研究内部机制 | 可以分析 collapse / reactive compact 分支，但必须把 live 状态写清楚 |
 
 ## 先读什么
 
 1. [什么是 Claude Code](/docs/introduction/what-is-claude-code)
-2. [架构全景](/docs/introduction/architecture-overview)
+2. [单轮状态机](/docs/conversation/single-turn-state-machine)
+3. [架构全景](/docs/introduction/architecture-overview)
 
 ## 继续读什么
 
-- [单轮状态机](/docs/conversation/single-turn-state-machine)
 - [恢复与 Fallback](/docs/conversation/recovery-and-fallback)
+- [流事件与 Watchdog](/docs/conversation/stream-events-and-watchdog)
+- [压缩边界与 PTL](/docs/context/compaction-boundaries-and-ptl)
+- [消息队列与 Prompt 调度](/docs/runtime/message-queue-and-prompt-scheduling)
 
 ## 相关源码入口
 
-- `src/query.ts`
-- `src/services/api/claude.ts`
+- `src/query.ts:241-307` `queryLoop()` 与主 `while (true)` 入口
+- `src/query.ts:365-468` 预算、microcompact、context collapse、autocompact 预处理链
+- `src/query.ts:659-866` 流式 `callModel()`、`tool_use` 收集与 `StreamingToolExecutor`
+- `src/query.ts:1065-1360` 非工具终点、恢复分支、stop hooks、token budget
+- `src/query.ts:1383-1730` 工具执行、附件注入、刷新工具池与下一轮 `State`
+- `src/services/tools/StreamingToolExecutor.ts` 流式工具执行器
+- `src/services/tools/toolOrchestration.ts` 非流式 `runTools()` 批执行
 
 ## 本页证据等级
 
-- `external build active`: agentic loop、继续条件、终止条件
-messagesForQuery（原始消息）
-  ↓ applyToolResultBudget()    — 工具结果预算截断（按 maxResultSizeChars）
-  ↓ snipCompactIfNeeded()      — 历史 Snip 压缩（HISTORY_SNIP feature）
-  ↓ microcompact()             — 微压缩（工具结果摘要）
-  ↓ applyCollapsesIfNeeded()   — 上下文折叠（CONTEXT_COLLAPSE feature）
-  ↓ autocompact()              — 自动压缩（超出阈值时触发）
-messagesForQuery（处理后的消息）→ 发往 API
-```
-
-每个步骤的输出是下一步的输入，形成串行管道。Snip 和 Microcompact 的释放 token 数会传递给 autocompact 的阈值计算（`snipTokensFreed`），避免重复压缩。
-
-### 阶段 2：流式 API 调用（Streaming Loop）
-
-`deps.callModel()` 发起流式请求（第 659 行），返回一个 AsyncGenerator。在流式过程中：
-
-- **AssistantMessage** 被收集到 `assistantMessages[]` 数组
-- **tool_use 块** 被提取到 `toolUseBlocks[]`，设置 `needsFollowUp = true`
-- **StreamingToolExecutor** 在流式过程中就开始并行执行工具（不等流结束）
-- 可恢复的错误（prompt-too-long、max-output-tokens）被**暂扣**（withheld），先尝试恢复
-
-流式回调中的关键守卫：
-- `backfillObservableInput()`（第 763 行）—— 为 tool_use 块回填可观察字段（如文件路径展开），但只在添加了新字段时才克隆消息，避免破坏 prompt cache 的字节一致性
-- 流式降级检测——如果 `streamingFallbackOccured`，已收集的消息被标记为 tombstone（第 717 行），清空后重试
-
-### 阶段 3：工具执行（Tool Execution）
-
-如果 `needsFollowUp` 为 true，循环不会终止，而是执行工具：
-
-```typescript
-// 两种工具执行器（互斥）
-const toolUpdates = streamingToolExecutor
-  ? streamingToolExecutor.getRemainingResults()  // 流式：获取已完成的+等待中的
-  : runTools(toolUseBlocks, assistantMessages, canUseTool, toolUseContext)
-```
-
-工具结果通过 `normalizeMessagesForAPI()` 标准化后，与原始消息合并，进入**下一轮循环迭代**。
-
-### 阶段 4：终止或继续
-
-每次迭代结束时，根据条件决定 `return`（终止）或 `continue`（继续）：
-
-## 7 种终止条件（源码级）
-
-| 终止原因 | 触发位置 | 机制 |
-|----------|---------|------|
-| **completed** | 第 1360 行 | AI 未发出 tool_use → `needsFollowUp = false` → 经过 stop hooks → 返回 |
-| **blocking_limit** | 第 646 行 | Token 计数超过硬限制（非 autocompact 模式）→ 生成 PTL 错误消息 → 返回 |
-| **aborted_streaming** | 第 1054 行 | `abortController.signal.aborted` → 为未完成的 tool_use 生成合成 tool_result → 返回 |
-| **model_error** | 第 999 行 | `callModel()` 抛出异常 → 生成错误消息 → 返回 |
-| **prompt_too_long** | 第 1178 行 | 413 错误进入 overflow 边界；当前仓库里 `reactiveCompact` 为 stub，因此不应文档化为稳定 live 恢复路径 |
-| **image_error** | 第 980/1178 行 | 图片尺寸/大小错误 → 直接返回 |
-| **stop_hook_prevented** | 第 1282 行 | Stop hook 返回 `preventContinuation: true` → 返回 |
-
-## 4 种继续条件（恢复路径）
-
-循环不仅是一个简单的"有 tool_use 就继续"，它还包含多种恢复/重试路径：
-
-### 1. 正常工具循环
-`needsFollowUp = true` → 执行工具 → 新消息追加到 `messagesForQuery` → `continue`
-
-### 2. max_output_tokens 恢复（第 1191-1255 行）
-当 AI 输出被截断时（`apiError === 'max_output_tokens'`）：
-- **首次**：尝试将 `maxOutputTokens` 从默认值提升到 `ESCALATED_MAX_TOKENS`（64K），无 meta 消息，静默重试
-- **后续**：注入恢复消息"Output token limit hit. Resume directly..."，最多重试 `MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3` 次
-- 恢复耗尽后，暂扣的错误消息被释放
-
-### 3. Prompt-Too-Long 边界（第 1088-1186 行）
-当遇到 413 错误时，`query.ts` 保留了两段恢复性设计分支：
-- **Context Collapse Drain**：提交所有已暂存的折叠，释放空间后重试，但依赖 `contextCollapse` feature gate
-- **Reactive Compact**：触发即时压缩并重试，但当前 reverse-engineered 仓库里 `reactiveCompact.ts` 是 stub
-
-因此阅读这里时，应该把它理解为“状态机预留了 overflow 恢复形状”，而不是“当前 external build 一定会自动走完这两步”。
-
-### 4. Stop Hook 阻塞重试（第 1285-1308 行）
-Stop hook 可以注入阻塞错误消息，强制 AI 重新思考。新的消息（包含阻塞错误）被追加到对话中，`stopHookActive = true`，进入下一轮迭代。
-
-## 模型降级（Fallback）
-
-当主模型不可用时（`FallbackTriggeredError`，第 897 行）：
-
-1. 已收集的 `assistantMessages` 被清空，tool_use 块收到合成 tool_result："Model fallback triggered"
-2. 思维签名块被移除（`stripSignatureBlocks`）—— 因为思维签名与模型绑定，跨模型回放会 400
-3. 切换到 `fallbackModel`，更新 `toolUseContext.options.mainLoopModel`
-4. 生成系统消息："Switched to {fallback} due to high demand for {original}"
-5. 重新发起流式请求
-
-## 状态机：State 对象
-
-每次迭代的状态通过 `State` 类型（第 204 行）传递：
-
-```typescript
-type State = {
-  messages: Message[]                        // 当前对话消息
-  toolUseContext: ToolUseContext              // 工具上下文（含权限）
-  autoCompactTracking: AutoCompactTrackingState  // 压缩跟踪
-  maxOutputTokensRecoveryCount: number       // 输出截断恢复计数
-  hasAttemptedReactiveCompact: boolean       // 是否已尝试即时压缩
-  maxOutputTokensOverride: number | undefined // 输出 token 上限覆盖
-  pendingToolUseSummary: Promise<...> | undefined  // 异步工具摘要
-  stopHookActive: boolean | undefined        // Stop hook 是否激活
-  turnCount: number                          // 轮次计数
-  transition: Continue | undefined           // 上一次继续的原因
-}
-```
-
-每次 `continue` 都创建新的 State 对象（不可变更新），而非就地修改。`transition` 字段记录了为什么继续——让后续迭代能检测特定恢复路径（如 `collapse_drain_retry`）避免循环。
-
-## Token Budget（实验性）
-
-当 `TOKEN_BUDGET` feature 启用时（第 1311 行），循环在终止前会检查 token 消耗：
-
-- **continuation**：未达到预算但超过阈值 → 注入 nudge 消息，让 AI 加速收尾
-- **diminishing_returns**：检测到收益递减 → 提前终止
-- 预算数据来自 `createBudgetTracker()`，跨迭代累计
-
-## 为什么不是"一次规划，批量执行"
-
-<Note>
-源码揭示了为什么 Claude Code 选择逐步循环：
-</Note>
-
-- **每一步都产生真实信息**：`runTools()` 返回的 `toolResults` 是 API 不可能预知的——命令输出、文件内容、错误信息
-- **动态上下文管理**：每轮迭代前都重新评估压缩需求（autocompact → microcompact → snip），基于最新的 token 计数
-- **错误即时恢复**：工具失败不需要推倒重来——stop hook 可以注入阻塞错误让 AI 修正策略
-- **用户可控**：`abortController.signal` 在循环的多个检查点被检测（第 1018、1048、1488 行），用户按 ESC 可以优雅中断
-- **成本控制**：Token Budget 在每轮终止前检查，防止 AI 无效循环
-
-## 一个完整的迭代示例
-
-> 用户："帮我找到项目里所有未使用的导入语句，然后删掉它们"
-
-```
-迭代 1: 思考→行动
-  预处理: 无需压缩（上下文很短）
-  API 调用: 返回 tool_use(Glob, "**/*.ts")
-  工具执行: 返回 42 个文件路径
-  → needsFollowUp = true, continue
-
-迭代 2: 思考→行动
-  预处理: 42 个文件结果仍在预算内
-  API 调用: 返回 tool_use(Grep, "import.*from")
-  工具执行: 在 15 个文件中找到 120 条 import
-  → needsFollowUp = true, continue
-
-迭代 3: 思考→行动（多轮）
-  预处理: 120 条 Grep 结果触发 microcompact → 摘要化
-  API 调用: 返回 3 个 tool_use(FileEdit, ...)
-  工具执行: 删除 5 条未使用导入
-  → needsFollowUp = true, continue
-
-迭代 4: 总结
-  API 调用: 返回纯文本"已清理 3 个文件中的 5 条未使用导入"
-  → needsFollowUp = false
-  → Stop hooks 通过
-  → return { reason: 'completed' }
-```
+- `external build active`: `queryLoop()` 主循环、正常工具继续、streaming tool execution、`max_output_tokens` 恢复、stream/model fallback、stop hook 阻塞
+- `feature-gated`: `TOKEN_BUDGET`、`CONTEXT_COLLAPSE` 及其 overflow drain
+- `stubbed/removed`: `reactiveCompact` 的当前仓库实现状态
