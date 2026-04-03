@@ -9,27 +9,35 @@ const args = process.argv.slice(2);
 const LOCKED_VIEWPORT =
   'width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, viewport-fit=cover';
 
-// Inline script that:
-// 1. Blocks gesture/pinch zoom events (iOS Safari gesturestart, multi-touch)
-// 2. Uses MutationObserver to guard the viewport meta — if Next.js hydration
-//    or any other script resets it, we immediately restore the locked value.
+// Inline script — placed at the very top of <head> to run before any framework JS.
+//
+// Strategy: Next.js hydration doesn't just *modify* the viewport meta — it *removes*
+// the old one and *creates* a new one, so a MutationObserver on the original element
+// goes dead. Instead we observe the entire <head> for childList + subtree + attributes
+// changes, and re-lock every viewport meta we find. This covers:
+//   - attribute changes on existing meta
+//   - old meta removed + new meta inserted (Next.js hydration)
+//   - any script that modifies viewport at any point
 const noZoomGestureScript =
   '<script id="disable-mobile-zoom">' +
   '(function(){' +
   "var V='width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, viewport-fit=cover';" +
+  // Lock all viewport metas in the document right now
+  'function lockAll(){' +
+  "var ms=document.querySelectorAll('meta[name=viewport]');" +
+  "for(var i=0;i<ms.length;i++){if(ms[i].getAttribute('content')!==V){ms[i].setAttribute('content',V);}}" +
+  '}' +
+  'lockAll();' +
+  // Observe <head> for any DOM changes and re-lock
+  "var h=document.head||document.getElementsByTagName('head')[0];" +
+  'if(h){new MutationObserver(function(){lockAll();}).observe(h,{childList:true,subtree:true,attributes:true,attributeFilter:[\"content\"]});}' +
+  // Gesture guards
   'var n=function(e){e.preventDefault();};' +
   "document.addEventListener('gesturestart',n,{passive:false});" +
   "document.addEventListener('gesturechange',n,{passive:false});" +
   "document.addEventListener('gestureend',n,{passive:false});" +
   "document.addEventListener('touchmove',function(e){if(e.touches.length>1){e.preventDefault();}},{passive:false});" +
-  // Double-tap zoom prevention
   "var t=0;document.addEventListener('touchend',function(e){var now=Date.now();if(now-t<300){e.preventDefault();}t=now;},{passive:false});" +
-  // MutationObserver: guard viewport meta against hydration resets
-  "var m=document.querySelector('meta[name=viewport]');" +
-  'if(m){' +
-  "if(m.getAttribute('content')!==V){m.setAttribute('content',V);}" +
-  "new MutationObserver(function(){if(m.getAttribute('content')!==V){m.setAttribute('content',V);}}).observe(m,{attributes:true,attributeFilter:['content']});" +
-  '}' +
   '})();' +
   '</script>';
 
@@ -108,19 +116,30 @@ function rewriteTextAsset(content, basePath) {
 
   // Only inject zoom-lock into HTML files (those with </head>).
   if (rewritten.includes('</head>')) {
-    // 1. Force the viewport meta tag to disable zoom (static, works everywhere).
+    // 1. Inject the zoom-lock script at the very top of <head>, right after <meta charset>
+    //    so it runs before any framework JS (Next.js hydration, etc.)
+    if (!rewritten.includes('id="disable-mobile-zoom"')) {
+      // Find <meta charset> and inject right after it, or fallback to after <head>
+      const charsetMatch = rewritten.match(/<meta\s+charset=[^>]*>/i);
+      if (charsetMatch) {
+        rewritten = rewritten.replace(
+          charsetMatch[0],
+          `${charsetMatch[0]}${noZoomGestureScript}${noZoomStyle}`
+        );
+      } else {
+        rewritten = rewritten.replace(
+          /<head[^>]*>/i,
+          `$&${noZoomGestureScript}${noZoomStyle}`
+        );
+      }
+    }
+
+    // 2. Force the viewport meta tag to disable zoom (static, works everywhere).
+    //    This sets the initial state; the script above guards it at runtime.
     rewritten = rewritten.replace(
       /<meta\s+name=["']viewport["'][^>]*>/i,
       `<meta name="viewport" content="${LOCKED_VIEWPORT}">`
     );
-
-    // 2. Inject CSS + JS guards (only once).
-    if (!rewritten.includes('id="disable-mobile-zoom"')) {
-      rewritten = rewritten.replace(
-        '</head>',
-        `${noZoomStyle}${noZoomGestureScript}</head>`
-      );
-    }
   }
 
   return rewritten;
