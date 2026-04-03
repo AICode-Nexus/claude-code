@@ -9,23 +9,33 @@ const args = process.argv.slice(2);
 const LOCKED_VIEWPORT =
   'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover';
 
-// Minimal inline script: block gesture-based zoom on iOS Safari (gesturestart) and
-// multi-touch pinch on all mobile browsers. The viewport meta tag handles the rest.
+// Inline script that:
+// 1. Blocks gesture/pinch zoom events (iOS Safari gesturestart, multi-touch)
+// 2. Uses MutationObserver to guard the viewport meta — if Next.js hydration
+//    or any other script resets it, we immediately restore the locked value.
 const noZoomGestureScript =
   '<script id="disable-mobile-zoom">' +
   '(function(){' +
+  "var V='width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover';" +
   'var n=function(e){e.preventDefault();};' +
   "document.addEventListener('gesturestart',n,{passive:false});" +
   "document.addEventListener('gesturechange',n,{passive:false});" +
   "document.addEventListener('gestureend',n,{passive:false});" +
   "document.addEventListener('touchmove',function(e){if(e.touches.length>1){e.preventDefault();}},{passive:false});" +
+  // MutationObserver: guard viewport meta against hydration resets
+  "var m=document.querySelector('meta[name=viewport]');" +
+  'if(m){' +
+  "if(m.getAttribute('content')!==V){m.setAttribute('content',V);}" +
+  "new MutationObserver(function(){if(m.getAttribute('content')!==V){m.setAttribute('content',V);}}).observe(m,{attributes:true,attributeFilter:['content']});" +
+  '}' +
   '})();' +
   '</script>';
 
 // CSS to disable touch-based zoom gestures at the browser engine level.
+// Use !important to win over any framework-injected styles.
 const noZoomStyle =
   '<style id="disable-mobile-zoom-css">' +
-  'html,body{touch-action:pan-x pan-y;-ms-touch-action:pan-x pan-y;}' +
+  'html,body{touch-action:pan-x pan-y!important;-ms-touch-action:pan-x pan-y!important;}' +
   '</style>';
 
 function getArgValue(flag, defaultValue) {
