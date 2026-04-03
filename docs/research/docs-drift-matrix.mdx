@@ -1,0 +1,138 @@
+---
+title: "文档漂移矩阵 - 哪些说明和当前代码已经不一致"
+description: "把 build、test/lint、plugins、LSP、voice 和 interactive orchestration 的文档漂移集中列出来，作为维护者修正文档与 onboarding 的优先清单。"
+keywords: ["docs drift", "AGENTS.md", "CLAUDE.md", "architecture drift", "maintenance"]
+---
+
+## 一句话结论
+
+当前仓库不是“所有文档都失效”，而是少数总览与 onboarding 文本存在高价值漂移；真正危险的不是措辞老旧，而是这些漂移会直接把维护者的排查顺序带偏。
+
+## 为什么要做漂移矩阵
+
+reverse-engineered 仓库的文档漂移，不只是“文档没更新”这么简单。它通常来自三种力量叠加：
+
+- 代码恢复状态持续变化，但根级说明文件不会同步细改。
+- 树上存在的 gated/internal 路径，很容易被误写成当前 active path。
+- 总览文档天然倾向于压缩复杂性，于是把关键边界抹平了。
+
+所以这页不是“挑错清单”，而是维护用的 **高风险偏差雷达图**。
+
+## 漂移矩阵
+
+| 区域 | 漂移说法 | 当前代码现实 | 为什么昂贵 |
+|---|---|---|---|
+| build output | 单文件 bundle | [build.ts](/Users/admin/work/claude-code-docs-sweep/build.ts) 明确是 `splitting: true` 的 split build | 会误判 `dist` 结构、兼容补丁和运行方式 |
+| test / lint | 没有 runner、没有 linter | [package.json](/Users/admin/work/claude-code-docs-sweep/package.json) 已有 `bun test` 与 `biome lint` | 会让人误以为仓库完全没有验证入口 |
+| interactive orchestration | REPL 经 `QueryEngine` | 当前 interactive 是 `REPL.tsx -> query.ts`；`QueryEngine` 主要服务 headless/print | 会把 REPL 问题排查到错误文件 |
+| GrowthBook | 空实现 | [src/services/analytics/growthbook.ts](/Users/admin/work/claude-code-docs-sweep/src/services/analytics/growthbook.ts) 有真实初始化、缓存、refresh | 会低估运行时 gate 的现实影响 |
+| plugins / marketplace | 已移除 | `main.tsx`、plugin loader、plugin CLI、marketplace manager 都还在 | 会错过命令/设置装载链 |
+| LSP / voice | 已删除 | 树上仍有 LSPTool、voice hooks 等保留路径 | 会把“默认不活跃”和“彻底删除”混成一件事 |
+
+## 权威性排序
+
+当文档与代码冲突时，这个仓库更靠谱的信任顺序是：
+
+1. **入口与 registry 源码**
+   `src/entrypoints/cli.tsx`, `src/main.tsx`, `src/tools.ts`
+2. **可执行脚本与构建事实**
+   `build.ts`, `package.json`, 当前脚本定义
+3. **已按源码重写过的 Hub 页**
+   本站 introduction/runtime/conversation/tools 等新版页面
+4. **根级 onboarding 文本**
+   例如旧版 `AGENTS.md` 一类总览说明
+
+这不是说根级说明没有价值，而是说：**它们更适合提供进入仓库的初步方向，不适合作为细节真相的最后仲裁者。**
+
+## 一个实际例子
+
+根级 [AGENTS.md](/Users/admin/work/claude-code/AGENTS.md) 现在还同时保留了几条明显会误导维护者的说法：
+
+- “Build 是单文件 bundle”
+- “No test runner is configured. No linter is configured.”
+- “`QueryEngine.ts` 用于 REPL screen”
+- “GrowthBook / Plugins / Marketplace / Voice / LSP 已删除或空实现”
+
+而当前代码事实已经是：
+
+- build 走 split output；
+- test / lint 脚本存在；
+- REPL 直连 `query.ts`；
+- GrowthBook、plugins、LSP/voice 至少在代码层仍有活跃或半活跃基础设施。
+
+这类漂移最危险的地方在于：它们看起来都像“近似正确的简化”，但一旦用来指导排障，代价就会迅速放大。
+
+## 为什么不是更简单的修法
+
+一种偷懒修法是：只在旧文档后面加一句“以代码为准”。
+
+这不够，因为维护者真正需要的是：
+
+- **哪里漂了**
+- **漂向了什么方向**
+- **碰到冲突时先信谁**
+- **这类漂移会带来什么真实维护成本**
+
+所以这页必须把“影响”一列写出来。否则它还是一份被动说明，不是一份可操作的修复地图。
+
+## 失败与恢复
+
+| 失败方式 | 典型后果 | 恢复动作 |
+|---|---|---|
+| 继续沿用旧总览页作为唯一事实源 | 排查路径和系统心智模型一起漂移 | 回到入口源码和新版 Hub 页 |
+| 把 gated/internal/stub 都压成“已删除” | 研究与维护都失去分辨率 | 强制打状态标签重写 |
+| 只修一句话，不修权威顺序 | 下次冲突还会重复发生 | 明确“源码 > 脚本 > 新版 Hub > 旧 onboarding” |
+| 把漂移理解成整站不可信 | 读者放弃站点阅读 | 说明只有少数高杠杆页面需要优先校正 |
+
+## 边界与误读
+
+<Warning>
+“文档漂移”不等于“整站无效”。它更像地图上的危险路段：不是所有地方都错，但错的地方通常很伤。
+</Warning>
+
+- 不要把旧文档全部丢掉；很多仍有术语和历史背景价值。
+- 也不要因为少数页漂了，就放任总览页继续含混写法。
+- 漂移最该优先修的是 **入口判断、能力状态、排障顺序**，不是润色句子。
+
+## 修复优先级
+
+1. 根级总览与 onboarding 文档
+2. introduction / architecture / runtime 入口页
+3. tool / plugin / gating 这类最影响排障顺序的页面
+4. 长尾专题页与边缘能力页
+
+## 场景变体
+
+| 场景 | 最该优先修的漂移 |
+|---|---|
+| 新人 onboarding | build、test/lint、plugin 状态 |
+| 调试 interactive 行为 | REPL vs QueryEngine 的真实分叉 |
+| 调试运行时 gate | GrowthBook 不是空实现 |
+| 调试扩展面 | plugin / LSP / voice 的现实状态标签 |
+
+## 先读什么
+
+- 先读 [能力图谱](/docs/research/project-capability-atlas)
+- 再读 [阅读顺序与源码地图](/docs/introduction/reading-order-and-source-map)
+
+## 继续读什么
+
+- [交互与 Headless 分叉](/docs/introduction/interactive-vs-headless)
+- [运行时与构建](/docs/introduction/runtime-and-build)
+- [Plugin 状态与漂移](/docs/extensibility/plugin-status-and-drift)
+
+## 相关源码入口
+
+- `build.ts`
+- `package.json`
+- `src/entrypoints/cli.tsx`
+- `src/main.tsx`
+- `src/screens/REPL.tsx`
+- `src/cli/print.ts`
+- `src/services/analytics/growthbook.ts`
+- `src/utils/plugins/pluginLoader.ts`
+
+## 本页证据等级
+
+- `docs drift corrected`: [AGENTS.md](/Users/admin/work/claude-code/AGENTS.md) 与当前源码/脚本对照
+- `external build active`: [build.ts](/Users/admin/work/claude-code-docs-sweep/build.ts), [package.json](/Users/admin/work/claude-code-docs-sweep/package.json), [src/main.tsx](/Users/admin/work/claude-code-docs-sweep/src/main.tsx), [src/services/analytics/growthbook.ts](/Users/admin/work/claude-code-docs-sweep/src/services/analytics/growthbook.ts)

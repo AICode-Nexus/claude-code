@@ -1,148 +1,179 @@
 ---
-title: "Claude Code 能力图谱 - 当前仓库的真实热路径、扩展层与社区核验"
-description: "面向逆向研究者的 Claude Code 能力图谱。基于当前仓库源码梳理真实执行热路径、工具/命令/skills/MCP 扩展结构、feature gate 分层和社区共识核验。"
-keywords: ["Claude Code", "reverse engineering", "能力图谱", "skills", "MCP", "hooks", "query loop"]
+title: "能力图谱 - 当前仓库的热路径、控制平面、扩展面与漂移边界"
+description: "把当前仓库读成一张能力地图：热路径、控制平面、扩展装配面、门禁矩阵和文档漂移分别在哪里，应该怎么作为维护入口使用。"
+keywords: ["capability atlas", "hot path", "control plane", "extensions", "drift"]
 ---
 
-## 三条先给结论
+## 一句话结论
 
-- 当前仓库的核心不是某个单独聊天循环，而是 `启动装配 + query loop + 工具池 + 命令/skills + MCP + control plane` 的组合平台。
-- 在 external build 里，`feature() => false` 是最重要的阅读前提；它决定了哪些分支只是“树上存在”，哪些才是“当前会跑”。
-- 社区对 Claude Code 的高频判断里，关于“组合能力”“MCP 复杂度”“hooks 粒度不足”“CLAUDE.md 是信任边界”的几条，在当前源码中都有直接旁证。
+这份 reverse-engineered 仓库最值得研究的不是某个局部技巧，而是它如何把 **热路径、控制平面、扩展装配面、门禁矩阵和文档漂移** 组织成一个可长期运行的系统。
 
-<Note>
-完整研究稿位于 `docs/analysis/2026-04-02-claude-code-capability-atlas.md`。这个页面保留同样的结论，但更偏图谱式阅读。
-</Note>
+## 为什么这页必须是总导航页
 
-## 顶部摘要区
+如果把所有结论都塞进一页，读者只会得到一篇很长的摘要，却得不到可追踪的研究入口。所以这页的职责不是“替代全站”，而是提供一张能力地图，回答三个问题：
 
-| 研究问题 | 回答 |
-|---|---|
-| 这是什么仓库？ | 一个 Bun-first、反编译重建的 Claude Code CLI 平台工程，不是官方源码镜像。 |
-| 真正的热路径是什么？ | `cli.tsx -> main.tsx -> (REPL | print) -> query.ts`，headless 再经由 `QueryEngine.ts`。 |
-| 最值得研究的地方在哪里？ | 工具池、commands/skills、MCP、hooks、AppState 控制平面，而不只是单个 API client。 |
+1. 你此刻遇到的问题属于哪一块能力面。
+2. 这一块能力面在当前仓库里是 active、gated、ant-only，还是 stub。
+3. 你下一页该读哪一页，下一跳该落到哪个源码入口。
 
-## 核心图谱区
+这也是它和一般“项目概览”页的区别：它是导航页，不是总结页。
 
-<Frame caption="项目能力全景图">
-  <img src="/docs/images/research/capability-overview.svg" alt="Claude Code 能力全景图" />
-</Frame>
+## 顶部坐标系
+
+| 维度 | 你应该先记住什么 | 代表页面 |
+|---|---|---|
+| 热路径 | 入口之后有 interactive 与 headless 两条主线，但共用 `query.ts` | [架构总览](/docs/introduction/architecture-overview) |
+| 控制平面 | `AppState`、队列、session storage、tasks、hooks 决定系统如何保持一致性 | [运行时控制平面](/docs/runtime/app-state-control-plane) |
+| 扩展装配面 | tools、commands、skills、MCP、hooks 决定“系统此刻能做什么” | [工具池装配](/docs/tools/tool-pool-assembly) |
+| 门禁矩阵 | active / feature-gated / ant-only / stubbed 要严格分栏 | [Gating Matrix](/docs/internals/gating-matrix) |
+| 漂移矩阵 | 旧文档、设计意图和当前仓库实现经常不一致 | [文档漂移矩阵](/docs/research/docs-drift-matrix) |
+
+## 总体能力图
 
 ```mermaid
 flowchart LR
-  cli["src/entrypoints/cli.tsx<br/>feature() => false"] --> main["src/main.tsx"]
-  main -->|interactive| repl["REPL.tsx"]
-  main -->|--print| headless["cli/print.ts"]
-  repl --> query["query.ts"]
-  headless --> engine["QueryEngine.ts"]
-  engine --> query
-  query --> tools["tools.ts"]
-  tools --> mcp["mcp/client.ts"]
+  cli["入口层<br/>cli.tsx -> main.tsx"] --> hot["热路径<br/>REPL 或 print/QueryEngine"]
+  hot --> loop["共享 loop<br/>query.ts"]
+  loop --> tools["工具与命令<br/>tools.ts / commands.ts"]
+  loop --> state["控制平面<br/>AppState / queue / sessionStorage"]
+  loop --> ext["扩展面<br/>skills / MCP / hooks"]
+  tools --> gates["门禁矩阵<br/>active / gated / ant-only / stub"]
+  ext --> gates
+  state --> drift["漂移矩阵<br/>代码事实 vs 文档说法"]
+  hot --> drift
 ```
 
-这张热路径图背后的源码锚点是：
+这张图的重点不是“文件很多”，而是：**任何功能判断都不能只看一个模块**。你至少要同时知道：
 
-- `src/entrypoints/cli.tsx:3-18`
-- `src/main.tsx:2584-2845`
-- `src/main.tsx:3134-3146`
-- `src/QueryEngine.ts:178-214`
-- `src/screens/REPL.tsx:2797-2805`
+- 它挂在哪条热路径上。
+- 它是否经过控制平面。
+- 它是静态内建，还是运行时装配进来的。
+- 它在当前 external build 里到底活不活。
 
-## 模块地图区
+## 五大能力面怎么分
 
-<Frame caption="能力矩阵">
-  <img src="/docs/images/research/capability-matrix.svg" alt="Claude Code 能力矩阵图" />
-</Frame>
+| 能力面 | 核心问题 | 典型源码入口 | 当前状态 |
+|---|---|---|---|
+| 入口与热路径 | 请求怎么跑起来，interactive 和 headless 在哪里分叉 | `src/entrypoints/cli.tsx`, `src/main.tsx`, `src/query.ts` | `external build active` |
+| 控制平面 | 会话如何保持一致，为什么能 resume / 后台 / 多任务 | `src/state/AppStateStore.ts`, `src/utils/messageQueueManager.ts`, `src/utils/sessionStorage.ts` | `external build active` |
+| 扩展装配面 | tools、commands、skills、MCP 如何进入系统 | `src/tools.ts`, `src/commands.ts`, `src/skills/loadSkillsDir.ts`, `src/services/mcp/client.ts` | `external build active` |
+| 门禁与分层世界 | 哪些能力只是 gated、ant-only 或 stub | `src/tools.ts`, `src/entrypoints/cli.tsx`, `packages/@ant/*` | 混合态 |
+| 文档漂移 | 哪些公开说法与当前仓库不一致 | 当前 docs 与 active 源码入口对照 | 需要持续修正 |
 
-```mermaid
-flowchart TD
-  Builtins["COMMANDS()"] --> Commands["getCommands()"]
-  Bundled["bundled skills"] --> Commands
-  Local[".claude/skills/"] --> Commands
-  Plugins["plugins"] --> Commands
-  MCPPrompts["MCP prompt commands"] --> Commands
+## 一个实际使用例子
 
-  Base["getAllBaseTools()"] --> Pool["assembleToolPool()"]
-  MCPTools["MCP tools"] --> Pool
+假设你遇到的问题是：“为什么某个 MCP 工具明明配置了，却没有出现在模型可调用能力里？”
 
-  FileOps["file ops"] --> Dynamic["discover / activate dynamic skills"]
-  Dynamic --> Commands
-```
+这不是单一页面能回答的问题，它跨了三层：
 
-### 为什么说扩展层是主产品面
+1. 先用本页把问题归类到“扩展装配面”。
+2. 再跳到 [工具池装配](/docs/tools/tool-pool-assembly)，看 `assembleToolPool()`、deny rules、排序与去重。
+3. 如果发现是连接问题，再跳到 [MCP 连接生命周期](/docs/extensibility/mcp-connection-lifecycle)。
+4. 如果最后发现工具树上存在但当前构建被 gate 掉，则继续看 [Gating Matrix](/docs/internals/gating-matrix)。
 
-- `src/tools.ts` 不只是列工具，而是同时处理 preset、deny rules、REPL mode、MCP 合并与排序稳定性。
-- `src/commands.ts` 不只是 slash commands，而是 built-ins、bundled skills、plugin skills、workflow commands、dynamic skills 的汇合点。
-- `src/skills/loadSkillsDir.ts` 把 Markdown prompt workflow 升格为一等命令对象，并支持 frontmatter、路径条件、动态发现与 fork 执行。
-- `src/services/mcp/client.ts` 展示了 MCP 并不是“接个 HTTP server”这么简单，而是 transport、auth、timeout、session ingress、能力截断、IDE 特例等一整层集成逻辑。
+换句话说，这页负责把“我该去哪一层排查”讲清，而不是自己把所有源码细节讲完。
 
-## 风险与偏差区
+## 为什么不是更简单的地图
 
-```mermaid
-flowchart TD
-  Tree["Source tree"] --> Gate["feature() => false"]
-  Gate -->|hot path| Active["external build active path"]
-  Gate -->|dormant| Hidden["dormant feature branches"]
-  Active --> Runtime["runtime gates / permissions / env"]
-  Runtime --> Surface["public surfaces"]
-  Runtime --> Ant["ant-only branches"]
-  Tree --> Stubs["stubs / removed modules"]
-```
+如果只给一张“模块目录树”，会遗漏三个维护中最痛的事实：
 
-<AccordionGroup>
-  <Accordion title="最关键的阅读风险">
-    当前仓库最容易被误读的地方，是把树上存在的 `feature(...)` 分支、`USER_TYPE === 'ant'` 内部能力和 stub 包，直接当作当前 external build 的活跃能力。`src/entrypoints/cli.tsx` 里的 `feature() => false` 使这种误读尤其昂贵。
-  </Accordion>
-  <Accordion title="最典型的文档漂移">
-    本地 `AGENTS.md` 仍把构建描述成单文件产物，并写着“没有 test runner / linter”。但 `build.ts` 已经使用 `splitting: true`，`package.json` 也定义了 `test`、`lint`、`format` 等脚本。对于当前工程现实，`build.ts + package.json + docs/` 的权威性已经高于本地 onboarding 文档。
-  </Accordion>
-  <Accordion title="为什么控制平面值得单独关注">
-    `src/state/AppStateStore.ts` 把 task、MCP、plugin、fileHistory、attribution、sessionHooks、remote bridge、computer-use、REPL VM context 等状态收在一个会话级控制平面里。很多“UI 问题”或“工具问题”的根因，其实在共享状态同步上。
-  </Accordion>
-</AccordionGroup>
+- 同名能力在不同模式下会走完全不同的上层路径。
+- 很多能力不是静态定义，而是运行时装配出来的。
+- 树上存在不等于 external build 活跃。
 
-## 社区核验区
+所以这页必须把“热路径”和“门禁状态”一起呈现；否则它只是一份 prettier 过的 `tree` 输出。
 
-<Frame caption="社区观点核验图">
-  <img src="/docs/images/research/community-verdicts.svg" alt="Claude Code 社区观点核验图" />
-</Frame>
+## 失败与恢复
 
-| 社区共识 | Verdict | 当前仓库里的证据 |
+| 失败方式 | 会把你带去哪里 | 正确恢复动作 |
 |---|---|---|
-| Claude Code 的壁垒来自组合能力而非单功能 | `源码证实` | 工具、命令、skills、MCP、hooks、state 全都不是配角。 |
-| hooks 很有用，但还不够细 | `部分成立 / 依赖上下文` | 仓库里 hooks 很深，社区 issue 仍在要更细 lifecycle。 |
-| MCP 是最强扩展面，也是最脆的一面 | `源码证实` | `mcp/client.ts` 的复杂度与 issue 热点一致。 |
-| sub-agents 生产力高，但边界仍粗糙 | `部分成立 / 依赖上下文` | 官方公开支持，社区仍反馈 session/stop/identity 边缘行为。 |
-| CLAUDE.md 既提高效率，也构成信任边界 | `源码证实` | trust、memory、settings、print mode 都把它视为强输入。 |
+| 只看目录结构，不看热路径 | 把 interactive 问题误追到 QueryEngine | 先回到入口与热路径图 |
+| 只看 `src/tools.ts`，不看 MCP / hooks / skills | 把能力面缩成“内置工具表” | 回到扩展装配面 |
+| 看到 `feature()` / `USER_TYPE === 'ant'` 就当作当前能力 | 把 gated / internal 功能写成已上线 | 先查门禁矩阵，再下结论 |
+| 只看旧文档摘要，不回源码 | 写出一篇语言很顺但事实漂移的总览 | 以源码入口和当前 Hub 页为准重写 |
 
-## 结语与延伸阅读
+## 边界与误读
+
+<Warning>
+这页不是“总论替代品”，也不是“把所有页缩成一页”。它的价值在于给出坐标，而不是抢走子页该承担的细节。
+</Warning>
+
+- 不要把本页里的短结论当作最终证据；证据仍要回到对应 Hub 页和源码入口。
+- 不要把“树上有能力”写成“当前 external build 可用能力”。
+- 不要把 “interactive / headless / SDK / background” 混成一条单线执行图。
+- 不要把控制平面误写成纯 UI store；它在这个仓库里是横跨任务、权限、MCP、bridge 的会话级聚合层。
+
+## 场景变体
+
+| 你在做什么 | 最好先读哪一组 |
+|---|---|
+| 修启动、构建、模式分流 | `开始` + `运行时与控制平面` |
+| 修工具、权限、tool call | `工具` + `安全` |
+| 修 resume、上下文、compact | `对话` + `上下文` |
+| 修多 agent、任务、后台执行 | `多 Agent` + `运行时与控制平面` |
+| 修技能、命令、MCP、hooks | `可扩展性` |
+| 做逆向证据整理 | `揭秘` + `研究` |
+
+## 推荐阅读路线
+
+### 路线 1：想先理解主系统
+
+1. [什么是 Claude Code](/docs/introduction/what-is-claude-code)
+2. [架构总览](/docs/introduction/architecture-overview)
+3. [交互与 Headless 分叉](/docs/introduction/interactive-vs-headless)
+4. [运行时控制平面](/docs/runtime/app-state-control-plane)
+
+### 路线 2：想理解“为什么某些功能树上有但跑不起来”
+
+1. [三层门控](/docs/internals/three-tier-gating)
+2. [Gating Matrix](/docs/internals/gating-matrix)
+3. [Ant-Only 世界](/docs/internals/ant-only-world)
+4. [文档漂移矩阵](/docs/research/docs-drift-matrix)
+
+### 路线 3：想做扩展或排查能力注入问题
+
+1. [工具池装配](/docs/tools/tool-pool-assembly)
+2. [命令系统](/docs/extensibility/command-system)
+3. [MCP 连接生命周期](/docs/extensibility/mcp-connection-lifecycle)
+4. [Skills 排序与预算](/docs/extensibility/skills-ranking-and-budgeting)
+
+## 先读什么
+
+- 先读 [阅读顺序与源码地图](/docs/introduction/reading-order-and-source-map)
+- 如果你是第一次进仓库，再回到 [架构总览](/docs/introduction/architecture-overview)
+
+## 继续读什么
 
 <CardGroup cols={2}>
-  <Card title="一条核心结论" icon="diagram-project">
-    这个仓库最值得研究的不是“模型怎么回消息”，而是“会话如何组织能力”。
+  <Card title="运行时控制平面" icon="sliders" href="/docs/runtime/app-state-control-plane">
+    看会话状态、权限、任务和 MCP 如何在同一个 store 聚合。
   </Card>
-  <Card title="最佳阅读顺序" icon="route">
-    建议按 `cli.tsx -> main.tsx -> query.ts -> QueryEngine.ts -> tools.ts -> commands.ts -> loadSkillsDir.ts -> mcp/client.ts -> AppStateStore.ts -> REPL.tsx` 进入。
+  <Card title="工具池装配" icon="toolbox" href="/docs/tools/tool-pool-assembly">
+    看 built-in、MCP、deny rules 和排序去重如何组成真实能力面。
   </Card>
-  <Card title="延伸：对话循环" icon="arrows-rotate" href="/docs/conversation/the-loop">
-    继续看 `query.ts` 的 agentic loop 状态机。
+  <Card title="Gating Matrix" icon="table" href="/docs/internals/gating-matrix">
+    看 active、feature-gated、ant-only、stubbed 的总矩阵。
   </Card>
-  <Card title="延伸：三层门禁" icon="shield" href="/docs/internals/three-tier-gating">
-    继续看 feature gate、GrowthBook 与 ant-only 的层次关系。
+  <Card title="文档漂移矩阵" icon="triangle-exclamation" href="/docs/research/docs-drift-matrix">
+    看哪些说法最容易与当前源码失配。
   </Card>
 </CardGroup>
 
-### 主要外部参考
+## 相关源码入口
 
-- [Anthropic: Claude Code overview](https://docs.anthropic.com/en/docs/claude-code/overview)
-- [Anthropic: Settings](https://docs.anthropic.com/en/docs/claude-code/settings)
-- [Anthropic: Memory](https://docs.anthropic.com/en/docs/claude-code/memory)
-- [Anthropic: Slash commands](https://docs.anthropic.com/en/docs/claude-code/slash-commands)
-- [Anthropic: Hooks](https://docs.anthropic.com/en/docs/claude-code/hooks)
-- [Anthropic: MCP](https://docs.anthropic.com/en/docs/claude-code/mcp)
-- [Anthropic: Sub-agents](https://docs.anthropic.com/en/docs/claude-code/sub-agents)
-- [Anthropic: Common workflows](https://docs.anthropic.com/en/docs/claude-code/common-workflows)
-- [awattar/claude-code-best-practices](https://github.com/awattar/claude-code-best-practices)
-- [Yuyz0112/claude-code-reverse](https://github.com/Yuyz0112/claude-code-reverse)
-- [luandro/awesome-claude-code-workflows](https://github.com/luandro/awesome-claude-code-workflows)
-- [anthropics/claude-code-action](https://github.com/anthropics/claude-code-action)
+- `src/entrypoints/cli.tsx`
+- `src/main.tsx`
+- `src/query.ts`
+- `src/tools.ts`
+- `src/commands.ts`
+- `src/state/AppStateStore.ts`
+- `src/utils/messageQueueManager.ts`
+- `src/utils/sessionStorage.ts`
+- `src/skills/loadSkillsDir.ts`
+- `src/services/mcp/client.ts`
+
+## 本页证据等级
+
+- `external build active`: [src/entrypoints/cli.tsx](/Users/admin/work/claude-code-docs-sweep/src/entrypoints/cli.tsx), [src/main.tsx](/Users/admin/work/claude-code-docs-sweep/src/main.tsx), [src/query.ts](/Users/admin/work/claude-code-docs-sweep/src/query.ts), [src/tools.ts](/Users/admin/work/claude-code-docs-sweep/src/tools.ts), [src/state/AppStateStore.ts](/Users/admin/work/claude-code-docs-sweep/src/state/AppStateStore.ts)
+- `inference`: “如何用这张图做维护入口”属于基于当前仓库结构给出的研究方法
+- `docs drift corrected`: 本页只承担导航职责，不再伪装成单页塞完全部结论

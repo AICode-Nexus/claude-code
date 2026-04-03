@@ -166,3 +166,21 @@ runShellCommand()
 ```
 
 UI 层通过 `useToolCallProgress` hook 实时展示命令输出。`resolveProgress()` 信号机制让 generator 在有新数据时才 yield，避免了忙等待。
+
+## 先读什么
+
+1. [AI 安全至关重要](/docs/safety/why-safety-matters)
+
+## 继续读什么
+
+- [Prompt Injection 防御](/docs/safety/prompt-injection-defense)
+- [权限规则手册](/docs/safety/permission-rule-cookbook)
+
+## 相关源码入口
+
+- `src/tools/BashTool/*`
+- `src/utils/bash/*`
+
+## 本页证据等级
+
+- `external build active`: BashTool、read-only 判定、超时与输出控制

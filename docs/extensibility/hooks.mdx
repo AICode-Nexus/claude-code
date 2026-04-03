@@ -237,3 +237,22 @@ clearSessionHooks(rootSetAppState, agentId)
 ```
 
 这确保 Agent A 的 Hook 不会泄漏到 Agent B 的执行中。
+
+## 先读什么
+
+1. [命令系统](/docs/extensibility/command-system)
+
+## 继续读什么
+
+- [Hooks 配方与模式](/docs/extensibility/hooks-recipes-and-patterns)
+- [信任边界](/docs/safety/trust-boundaries)
+
+## 相关源码入口
+
+- `src/utils/hooks.ts`
+- `src/utils/hooks/hookEvents.ts`
+- `src/utils/processUserInput/processUserInput.ts`
+
+## 本页证据等级
+
+- `external build active`: hook 生命周期和 session hooks

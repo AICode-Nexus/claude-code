@@ -1,0 +1,235 @@
+---
+title: "MCP 连接生命周期 - 从配置合并到运行期重连的全链路"
+description: "把 MCP 生命周期拆开讲透：config merge、policy/dedup、transport connect、capability discovery、AppState 注入、OAuth/XAA、elicitation、list_changed 刷新与重连恢复。"
+keywords: ["MCP", "connection lifecycle", "OAuth", "elicitation", "transport", "reconnect"]
+---
+
+## 一句话结论
+
+MCP 在这套系统里不是“接几个远程工具”这么简单，而是一条分层流水线：先做配置装配与策略裁剪，再做 transport 连接与鉴权，再把 tool / prompt / resource 转成本地可消费表面，最后还要在长会话里持续处理 `needs-auth`、`list_changed`、断线重连和 UI elicitation。
+
+## 状态标签总览
+
+| 生命周期层 | 当前状态 | 关键入口 | 这层在做什么 | 最容易写错的地方 |
+|---|---|---|---|---|
+| config scopes / merge / dedup | `external build active` | `src/services/mcp/config.ts` | 合并 `local/user/project/dynamic/enterprise/claudeai/managed`，做 precedence、policy 和重复签名去重 | 误写成“所有 MCP 都只看 `.mcp.json`” |
+| stdio / sse / http / ws / ide transports | `external build active` | `src/services/mcp/client.ts` | 选择 transport、挂 auth provider、设超时、连接缓存与 close 清理 | 误写成“MCP 就是一种 HTTP 远程协议” |
+| claude.ai connectors | `external build active` | `fetchClaudeAIMcpConfigsIfEligible()`, `getAllMcpConfigs()` | 第二阶段接入、与手写配置做签名级去重 | 误写成“和手写 server 是同一层 merge” |
+| OAuth / step-up / XAA | `external build active` | `src/services/mcp/auth.ts` | 标准 OAuth consent、token refresh、step-up scope、可选 XAA 路径 | 误写成“401 就等于失败” |
+| `needs-auth` 缓存 | `external build active` | `MCP_AUTH_CACHE_TTL_MS`, `isMcpAuthCached()` | 避免会话里反复探测同一个未授权 server | 误写成“系统根本没试着连” |
+| capability discovery | `external build active` | `fetchToolsForClient()`, `fetchCommandsForClient()`, `fetchResourcesForClient()` | 把 MCP capabilities 转换成本地 Tool / Command / Resource | 误写成“MCP 只会注入 tools” |
+| AppState 注入与两阶段加载 | `external build active` | `useManageMCPConnections.ts` | 先挂 pending，再分批连，再把结果批量写入 `AppState.mcp.*` | 误写成“启动时同步阻塞式全连完再显示” |
+| list_changed 刷新 / 断线重连 | `external build active` | `useManageMCPConnections.ts`, `clearServerCache()` | 增量刷新 tool / prompt / resource，remote transport 指数退避重连 | 误写成“连接建立后就静态不变” |
+| MCP skills | `feature-gated` | `fetchMcpSkillsForClient()`, `getMcpSkillCommands()` | 从 resources 发现 skill 资源，旁路进入命令/技能面 | 误写成“所有 MCP prompt 都自动是 skill” |
+| `CHICAGO_MCP` / in-process computer-use MCP | `feature-gated` + `stubbed/removed` | `src/services/mcp/client.ts`, `packages/@ant/computer-use-mcp/` | 代码里有 in-process 分支，但依赖状态混合 | 误写成“当前 external build 已有完整 computer-use MCP” |
+
+## 为什么不能把它写成“远程工具连接”
+
+如果 MCP 只是一个远程 tools API，系统根本不需要现在这套复杂结构。真实复杂度来自以下约束同时存在：
+
+- 配置来源不只一个，而且 enterprise、plugin-only policy、project approval 会改变哪些 server 有资格进入连接阶段。
+- transport 不是一种。`stdio`、`sse`、`http`、`ws`、`sse-ide`、`ws-ide`、`claudeai-proxy`、in-process server 都走不同分支。
+- 能力类型不是一种。server 可能提供 tools、prompts、resources、notifications、elicitation。
+- 连接不是一次性的。长会话里 server 可能换配置、断线、401、session 失效、推送 `list_changed`，系统必须能恢复而不是只会冷启动。
+
+因此 MCP 生命周期真正描述的是“外部能力如何被安全地接进本地运行时”，而不是“怎么打一条网络请求”。
+
+## 正常链路
+
+```mermaid
+flowchart TD
+  subgraph config["配置层"]
+    scopes["local / user / project / dynamic / enterprise / claudeai / managed"]
+    merge["getClaudeCodeMcpConfigs() / getAllMcpConfigs()"]
+    policy["policy / allowlist / denylist / project approval / dedup"]
+  end
+
+  subgraph runtime["运行时层"]
+    pending["useManageMCPConnections() -> pending clients"]
+    connect["connectToServer()"]
+    discover["fetchToolsForClient() / fetchCommandsForClient() / fetchResourcesForClient()"]
+    inject["updateServer() -> AppState.mcp.clients/tools/commands/resources"]
+    call["tool call / prompt execution / resource read"]
+    refresh["list_changed / onclose / reconnect / clearServerCache()"]
+  end
+
+  subgraph crosscut["跨层机制"]
+    auth["ClaudeAuthProvider / performMCPOAuthFlow() / XAA / needs-auth cache"]
+    elicit["registerElicitationHandler() / hooks / UI queue"]
+  end
+
+  scopes --> merge
+  merge --> policy
+  policy --> pending
+  pending --> connect
+  connect --> discover
+  discover --> inject
+  inject --> call
+  call --> refresh
+  refresh --> connect
+
+  auth -. 贯穿连接与恢复 .-> connect
+  auth -. 影响探测与重试 .-> refresh
+  elicit -. 贯穿运行期交互 .-> call
+```
+
+这里最关键的不是“先后顺序”，而是**哪些层必须分开写**：
+
+- config assembly 不等于 transport connect。
+- auth 不等于 connection state。
+- discovery 不等于 injection。
+- reconnect 不等于首次连接的简单重跑。
+
+## 关键结构 / 状态
+
+### 1. 配置与策略层
+
+| 结构 / 函数 | 负责什么 | 这页应该怎么理解 |
+|---|---|---|
+| `ConfigScope` | 配置作用域枚举 | `local/user/project/dynamic/enterprise/claudeai/managed` 都是显式层，不是注释概念 |
+| `ScopedMcpServerConfig` | 带 scope 的 server config | `scope` 是管理元数据，不是 transport 参数本身 |
+| `getClaudeCodeMcpConfigs()` | 快速装配 Claude Code 自有 MCP configs | 包括 enterprise 独占、plugin-only policy、project approval、plugin dedup |
+| `getAllMcpConfigs()` | 在上一步基础上再并入 claude.ai connectors | claude.ai 是第二阶段旁路接入，不是本地 config 文件的一部分 |
+| `dedupPluginMcpServers()` | plugin servers 对 manual servers 做签名级去重 | 名称空间不同也会按内容视作“同一 server” |
+| `dedupClaudeAiMcpServers()` | claude.ai connectors 对 manual servers 去重 | 手写配置优先于 connector，不会因为 display name 不同而双连 |
+| `filterMcpServersByPolicy()` / `isMcpServerDisabled()` | policy 与 toggle 过滤 | “出现在 UI 里”和“会不会被真正连接”是两个阶段 |
+
+### 2. 连接与能力发现层
+
+| 结构 / 函数 | 负责什么 | 这页应该怎么理解 |
+|---|---|---|
+| `MCPServerConnection` | 连接状态联合类型 | `connected / failed / needs-auth / pending / disabled` 是一等状态，不是日志文字 |
+| `getServerCacheKey()` | 连接缓存键 | 连接 memoization 是按 `name + config` 做的，不是只看 server 名 |
+| `connectToServer()` | transport 分支、超时、连接缓存、默认 elicitation handler | 真正的 transport connect 发生在这里 |
+| `clearServerCache()` | 断连与失效清理 | 不只删连接缓存，还会清 tools / commands / resources fetch cache |
+| `ensureConnectedClient()` | 运行期调用前确保连接有效 | tool call 与 prompt call 不会盲信旧连接对象 |
+| `areMcpConfigsEqual()` | 配置变更比较 | 用于识别“同名 server 但配置已变”的重连场景 |
+| `fetchToolsForClient()` | `tools/list` -> 本地 `Tool` | 会生成 `mcp__server__tool` 风格名字，并把注解映射成本地元数据 |
+| `fetchCommandsForClient()` | `prompts/list` -> 本地 `Command` | MCP prompt 是命令表面，但不是本地 registry 的一部分 |
+| `fetchResourcesForClient()` | `resources/list` -> `ServerResource[]` | 资源不仅用于读取，也可能继续衍生 skill/resource tools |
+| `ListMcpResourcesTool` / `ReadMcpResourceTool` | 资源统一入口 | 只在任一 server 支持 resources 时注入一次 |
+
+### 3. 运行期协调层
+
+| 结构 / 函数 | 负责什么 | 这页应该怎么理解 |
+|---|---|---|
+| `getMcpToolsCommandsAndResources()` | 批量连 server，并把每个结果回推给回调 | 本地 / 远端有不同并发上限；disabled server 会被短路标记 |
+| `useManageMCPConnections()` | 两阶段加载、批量写 AppState、重连与通知处理 | MCP 的真实“控制平面”在这里，而不是在 client.ts 一处 |
+| `registerElicitationHandler()` | 把 server elicitation 接进 UI 队列 | 先走 hook，再入队，完成后再跑 result hooks |
+| `performMCPOAuthFlow()` | 用户显式授权流 | 既支持标准 consent，也支持 `oauth.xaa` 指向的 XAA 路径 |
+| `ClaudeAuthProvider` | metadata / token / refresh / step-up scope 管理 | auth 不是 transport 的附属小功能，而是远端 server 的关键依赖 |
+
+## 一个实际例子：一个需要 OAuth 的 HTTP MCP server 会经历什么
+
+用一个 project 级 HTTP server 举例，最能看出各层分工：
+
+1. 用户在项目配置里写入该 server 后，`getClaudeCodeMcpConfigs()` 不会立刻相信它一定可连。
+   - 如果 enterprise MCP 配置存在，整个用户侧 server 集都会被跳过。
+   - 如果项目 server 没拿到批准，连 pending 都进不去。
+   - 如果 policy denylist 命中，后面根本不会进入 transport 层。
+2. 通过策略后，`useManageMCPConnections()` 先把这个 server 写成 `pending`，这样 UI 能立刻看到它，而不是等所有连接都完成。
+3. `getMcpToolsCommandsAndResources()` 准备真正连接前，还会先看两层 auth 旁路：
+   - `isMcpAuthCached(name)` 是否表明它最近 15 分钟内已经被判定为 `needs-auth`；
+   - 对 `http` / `sse`，是否处在“有 discovery 信息但没有 token”的状态。
+   如果命中，就不会白白再探测一次，而是直接回推 `needs-auth`，并附一个 auth tool。
+4. 真正进入 `connectToServer()` 时，HTTP 分支会：
+   - 构造 `ClaudeAuthProvider`；
+   - 合并静态 headers 与 helper 产出的动态 headers；
+   - 为单个 request 包 timeout；
+   - 用 `Promise.race()` 包裹整体连接超时；
+   - 声明 `elicitation: {}` capability。
+5. 如果连接阶段抛出 `UnauthorizedError` 或 claude.ai proxy 401，系统不会简单记成 `failed`，而是走 `handleRemoteAuthFailure()`：
+   - 记录 analytics；
+   - 写入 15 分钟 `needs-auth` 缓存；
+   - 把连接状态返回成 `needs-auth`。
+6. 用户触发授权后，`performMCPOAuthFlow()` 才会真正执行 consent 或 XAA：
+   - 如果配置里有 `oauth.xaa`，就不会降级回标准 consent flow；
+   - 否则会启动本地 callback server，校验 state，交换 token，并把 metadata / step-up 信息存回 provider 相关存储。
+7. 重新连接成功后，`reconnectMcpServerImpl()` 再把这个 server 的：
+   - `tools/list` 转成本地 `Tool[]`；
+   - `prompts/list` 转成 `Command[]`；
+   - `resources/list` 转成 `ServerResource[]`；
+   - 必要时注入 `ListMcpResourcesTool` / `ReadMcpResourceTool`。
+8. 最终 `updateServer()` 批量把这些结果写入 `AppState.mcp.clients/tools/commands/resources`。从这一刻起，它才真正进入主会话的可消费扩展面。
+
+这个例子的核心不是“HTTP server 接上了”，而是：**MCP 的成功连接，等于配置、策略、auth、transport、discovery、state injection 六层都过关。**
+
+## 再看运行期：连接成功并不代表生命周期结束
+
+MCP 页面最常见的误写，是把连接成功当作生命周期的终点。源码里恰好相反，运行期维护占了大量复杂度：
+
+- `useManageMCPConnections()` 对 remote transport 实现了指数退避重连；`stdio` 与 `sdk` 不走同一路重连策略。
+- `client.onerror` 和 `client.onclose` 会一起参与“清缓存 -> 断连 -> 下次操作重连”的闭环；尤其 HTTP/claudeai-proxy 还会识别 session expired 场景。
+- server 如果声明了 `tools.listChanged`、`prompts.listChanged`、`resources.listChanged`，客户端会分别刷新对应缓存，并把新结果重新写回 `AppState`。
+- `resources/list_changed` 在 `MCP_SKILLS` 打开时还会顺带刷新 MCP skills；这说明资源面变化并不只影响资源浏览，还会影响技能面。
+
+所以“连上”只是第一阶段，真正难的是“在一个长 session 里让外部系统持续像本地组件一样工作”。
+
+## 失败与恢复
+
+| 失败场景 | 表现 | 恢复 / 止损方式 |
+|---|---|---|
+| enterprise MCP 配置存在 | 用户 / 项目 / 本地 server 全部不进入普通 merge | 这是设计上的独占控制，先修正文档认知，不是先去查 transport |
+| plugin server 与手写 server 指向同一底层进程或 URL | 名字不同却只出现一个 | `dedupPluginMcpServers()` 按 command/url 签名去重，manual 优先 |
+| claude.ai connector 与手写 server 重复 | 用户以为“为什么只剩一个 Slack” | `dedupClaudeAiMcpServers()` 会压掉 connector，避免双连与 token 浪费 |
+| 刚连过一次 401 的远端 server 持续不可用 | 反复显示 `needs-auth` | 15 分钟 auth cache 会短路重复探测，避免每轮都打失败请求 |
+| 远端 transport 掉线 | tools / prompts 突然失效 | `onclose` 清缓存，remote transport 走指数退避重连 |
+| 配置改了但名称没变 | 老连接“看似还在” | `excludeStalePluginClients()` 与 `areMcpConfigsEqual()` 会把旧 client 视作 stale 并清理 |
+| server 动态新增或删除 prompt/tool/resource | 列表不更新 | `list_changed` notification handlers 会清对应 cache 再重拉 |
+| stdio server 退出不干净 | 子进程残留 | cleanup 对 stdio 做 `SIGINT -> SIGTERM -> SIGKILL` 梯度退出 |
+| tool call 遇到 session expired | 单次调用抛错或挂住 | 关闭 transport、清缓存，下次 `ensureConnectedClient()` 会重建连接 |
+
+## 边界与误读
+
+<Warning>
+不要把 MCP 写成“远端工具插件协议”。在当前仓库里，它同时覆盖本地 `stdio` 进程、远端 transport、资源读取、prompt 命令、UI elicitation 和长会话重连。
+</Warning>
+
+- `stdio` 是 MCP 的一等 transport。把 MCP 全部写成 HTTP / SSE，会直接误解一半以上的生命周期代码。
+- `connectToServer()` 里对 `sdk` 分支是显式拒绝的；这类 server 在别处做 in-process 处理，不能套用普通 remote connect 叙事。
+- `needs-auth` 是一种稳定状态，不是简单失败码。它背后有缓存、auth tool 与显式授权流。
+- MCP prompt commands 会变成 `Command`，但不意味着它们属于本地 `getCommands()` 注册表。
+- `MCP_SKILLS` 是 feature-gated；不要把“resources 可以衍生 skills”写成当前 external build 的默认公开行为。
+- `CHICAGO_MCP` 与 computer-use 路径要同时写两层标签：产品面是 `feature-gated`，依赖状态是 `stubbed/removed`。
+
+## 场景变体
+
+| 场景 | 生命周期重心 |
+|---|---|
+| 本地 `stdio` server | 子进程拉起、stderr 收集、显式信号清理、较低并发连接 |
+| 远端 `sse/http/ws` server | timeout、OAuth、proxy、terminal error 识别、重连 |
+| `claudeai-proxy` connector | 第二阶段加载、OAuth token 附带、对手写配置做签名去重 |
+| IDE transports (`sse-ide` / `ws-ide`) | transport 特化、IDE telemetry、通知回路 |
+| enterprise 独占环境 | config assembly 本身就是边界，很多 server 压根不会进入连接层 |
+| plugin-only policy 环境 | user/project/local servers 被抑制，plugin / enterprise 侧才是主来源 |
+| 资源密集型 server | `resources/list_changed`、resource tools 注入、可选 MCP skills 刷新成为重点 |
+
+## 先读什么
+
+- 先读 [MCP 协议](/docs/extensibility/mcp-protocol)
+- 再读 [命令系统](/docs/extensibility/command-system)
+
+## 继续读什么
+
+- [插件状态与漂移](/docs/extensibility/plugin-status-and-drift)
+- [工具池装配](/docs/tools/tool-pool-assembly)
+- [信任边界](/docs/safety/trust-boundaries)
+- [Prompt Injection 防御](/docs/safety/prompt-injection-defense)
+
+## 相关源码入口
+
+- `src/services/mcp/types.ts`
+- `src/services/mcp/config.ts`
+- `src/services/mcp/client.ts`
+- `src/services/mcp/useManageMCPConnections.ts`
+- `src/services/mcp/auth.ts`
+- `src/services/mcp/elicitationHandler.ts`
+- `src/services/mcp/claudeai.ts`
+- `src/services/mcp/utils.ts`
+
+## 本页证据等级
+
+- `external build active`: config scopes、policy filtering、plugin/claude.ai dedup、`stdio/sse/http/ws` transports、OAuth flow、`needs-auth` cache、capability discovery、AppState 注入、`list_changed` 刷新、重连与清缓存
+- `feature-gated`: MCP skills、`CHICAGO_MCP`
+- `stubbed/removed`: computer-use 相关底层依赖在当前仓库里不是完整 external build 形态
+- `inference`: “MCP 生命周期本质上是外部能力接入控制平面，而不是单次远程连接”是对上述分层实现的结构归纳

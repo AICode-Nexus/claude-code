@@ -1,159 +1,120 @@
 ---
-title: "Ant 特权世界 - Anthropic 员工专属功能"
-description: "完整记录 Claude Code 身份门控层：USER_TYPE === 'ant' 时解锁的专属工具、命令、API 和代号体系，揭示内外部构建的差异。"
-keywords: ["Ant 特权", "USER_TYPE", "身份门控", "内部功能", "Anthropic 员工"]
+title: "Ant 特权世界 - 内部身份边界如何改变能力面"
+description: "讲清 ant-only 在当前仓库里的真正意义：它不是一个 feature group，而是身份边界，决定某些工具、命令、日志、归属控制和内部约束只对 Anthropic 员工世界开放。"
+keywords: ["ant-only", "USER_TYPE", "undercover", "internal world", "identity gating"]
 ---
 
-{/* 本章目标：完整记录身份门控层——ant 构建独享的一切 */}
+## 一句话结论
 
-## 什么是 Ant
+`ant-only` 不是“又一种 feature flag”，而是 **身份边界**；它决定同一份代码树里哪些路径属于内部工作流世界，哪些路径属于 external build 的公开能力面。
 
-`USER_TYPE` 是一个构建时常量，通过 Bun 打包器的 `--define` 注入。在 Anthropic 的内部构建中它被设为 `'ant'`，在公开发布的版本中是 `'external'`：
+## 状态标签总览
 
-```typescript
-// 反编译版本（src/entrypoints/cli.tsx 第 16 行）
-(globalThis as any).BUILD_TARGET = "external";
+| 主题 | 当前状态 | 说明 |
+|---|---|---|
+| `USER_TYPE === 'ant'` 分支 | `ant-only` | 这是身份层，不是实验层 |
+| undercover / commit attribution | `ant-only` | 主要服务内部人员向公开仓库贡献代码时的暴露控制 |
+| ant 专属工具与调试分支 | `ant-only` | 例如 `ConfigTool`、`REPLTool`、某些内部日志/override |
+| 与 feature gate 叠加的内部能力 | `ant-only` + `feature-gated` | 两层可以同时存在，但不能混写 |
+| external build 对这些路径的可见性 | 多为证据可见，但不应宣称可用 | 研究价值存在，产品结论要谨慎 |
+
+## 为什么它必须单独成页
+
+如果不把 ant-only 单独拆出来，文档会在两个方向上一起出错：
+
+1. 把内部世界能力误写成公开产品能力。
+2. 因为它不属于公开世界，就把它对组织工作流的解释力全部删掉。
+
+这页的作用正是把两种误读都压住：**既不把内部能力宣传成 public feature，也不把它们当成毫无意义的噪音。**
+
+## 正常链路
+
+```mermaid
+flowchart LR
+  identity["USER_TYPE / internal env"] --> allow{"ant?"}
+  allow -->|yes| internal["undercover / attribution / ant tools / internal logging"]
+  allow -->|no| public["public external build surface"]
+  internal --> build["同一份代码树中的内部工作流层"]
 ```
 
-由于这是编译时常量，Bun 会进行**常量折叠**——所有 `process.env.USER_TYPE === 'ant'` 在外部构建中直接变为 `false`，后续代码被 DCE 移除。但在反编译版本中，这些代码保留完整。
+## 关键结构 / 状态
 
-`USER_TYPE === 'ant'` 出现在代码库的 **60+ 个位置**，控制着工具、命令、API、UI 等方方面面。
+| 源码入口 | 它说明什么 | 当前含义 |
+|---|---|---|
+| `src/tools.ts` | 有些工具直接按 `process.env.USER_TYPE === 'ant'` 裁剪 | 工具是否出现不是纯 feature gate 决定 |
+| `src/utils/undercover.ts` | undercover 明确只对 ant 世界生效 | 不是普通用户的“隐私增强模式” |
+| `src/setup.ts` | ant 模式下会 prime repo classification，用于 auto-undercover | 说明内部贡献公开仓库是实际工作流场景 |
+| `src/services/analytics/growthbook.ts` | ant 世界有额外 override 与调试入口 | 内部实验与公开实验不是完全同一套操作面 |
 
-## Ant-Only 工具
+`undercover.ts` 里的注释甚至把这件事说得很直白：对 ant 世界来说，undercover 模式用于防止内部模型代号、项目名、归属信息泄露到公开仓库；对 external builds，这些函数会退化成 trivial return。
 
-以下工具仅在内部构建中被加载到工具注册表：
+## 一个端到端例子
 
-| 工具 | 代码位置 | 用途 |
-|------|---------|------|
-| **REPLTool** | `src/tools/REPLTool/` | 高级 REPL 模式——在 VM 中包装 Bash/Read/Edit/Glob/Grep/Agent 等工具 |
-| **SuggestBackgroundPRTool** | `src/tools/SuggestBackgroundPRTool/` | 建议在后台创建 PR |
-| **ConfigTool** | `src/tools/ConfigTool/` | 交互式配置编辑器，包含 Gates 标签页用于覆盖 GrowthBook flags |
-| **TungstenTool** | `src/tools/TungstenTool/` | 基于 tmux 的终端面板工具（反编译版中已 stub） |
+`undercover` 是最典型的 ant-only 能力之一：
 
-```typescript
-// src/tools.ts 第 16-24 行
-const REPLTool =
-  process.env.USER_TYPE === 'ant'
-    ? require('./tools/REPLTool/REPLTool.js').REPLTool
-    : null
-const SuggestBackgroundPRTool =
-  process.env.USER_TYPE === 'ant'
-    ? require('./tools/SuggestBackgroundPRTool/SuggestBackgroundPRTool.js')
-        .SuggestBackgroundPRTool
-    : null
-```
+1. 它的默认逻辑不是“用户自己打开一个隐私选项”，而是内部环境下 **默认开启，直到 repo 被确认是 internal**。
+2. 它的目标不是普通终端用户体验，而是规范 commit message、PR title、PR body，不要泄露 Anthropic 内部模型代号、项目名和归属信息。
+3. `setup.ts` 还会在启动阶段预热 repo classification cache；如果仓库被确认是 internal，还会清空系统提示相关缓存，让后续回合摘掉 undercover 限制。
 
-## Ant-Only 命令
+这条链路说明：ant-only 的价值不在“酷炫隐藏功能”，而在 **身份边界改变了系统该如何对外说话和归属自己**。
 
-`src/commands.ts` 注册了 25+ 个仅在内部构建中可用的斜杠命令：
+## 为什么不是更简单的设计
 
-<AccordionGroup>
-  <Accordion title="调试类">
-    - `breakCache` — 清除缓存
-    - `ctx_viz` — 可视化上下文窗口使用情况
-    - `debugToolCall` — 调试工具调用
-    - `env` — 显示环境变量
-    - `mockLimits` — 模拟速率限制
-    - `resetLimits` — 重置速率限制
-  </Accordion>
-  <Accordion title="实验类">
-    - `bughunter` — Bug 猎人模式
-    - `goodClaude` — 质量评估工具
-    - `antTrace` — 追踪分析
-    - `perfIssue` — 性能问题诊断
-  </Accordion>
-  <Accordion title="工作流类">
-    - `commit` — 快速提交
-    - `commitPushPr` — 一键提交+推送+创建 PR
-    - `issue` — 创建 GitHub Issue
-    - `autofixPr` — 自动修复 PR 中的问题
-    - `share` — 分享会话
-    - `summary` — 生成摘要
-  </Accordion>
-  <Accordion title="基础设施类">
-    - `backfillSessions` — 回填会话数据
-    - `bridgeKick` — 重启 Bridge 连接
-    - `oauthRefresh` — 刷新 OAuth Token
-    - `teleport` — 传送到指定上下文
-    - `onboarding` — 新手引导
-    - `agentsPlatform` — Agents 平台管理
-    - `version` — 内部版本详情
-    - `initVerifiers` — 初始化验证器
-  </Accordion>
-</AccordionGroup>
+如果只靠 feature flag，而不引入身份层，就会把两类需求揉在一起：
 
-<Note>
-这些命令在 `IS_DEMO` 模式下也会被隐藏，防止在演示环境中暴露内部功能。
-</Note>
+- “这个能力是否还在实验中”
+- “这个能力本来就只属于内部组织工作流”
 
-## Beta API Headers
+这两类问题完全不同。前者偏产品灰度，后者偏组织边界。`ant-only` 的存在，就是把这条边界显式编码进系统。
 
-Claude Code 向 API 发送的 beta headers 也分为公开和内部两类：
+## 失败与恢复
 
-| Header | 功能 | 可见性 |
-|--------|------|--------|
-| `claude-code-20250219` | Claude Code 标识 | 公开 |
-| `interleaved-thinking-2025-05-14` | 交错思考模式 | 公开 |
-| `context-1m-2025-08-07` | 1M 上下文窗口 | 公开 |
-| `context-management-2025-06-27` | 上下文管理 | 公开 |
-| `web-search-2025-03-05` | 网页搜索 | 公开 |
-| `effort-2025-11-24` | 推理强度控制 | 公开 |
-| `fast-mode-2026-02-01` | 快速模式 | 公开 |
-| `token-efficient-tools-2026-03-28` | Token 高效工具 | 公开 |
-| `advisor-tool-2026-03-01` | 顾问工具 | 公开 |
-| **`cli-internal-2026-02-09`** | 内部 CLI 功能 | **Ant-Only** |
-| **`afk-mode-2026-01-31`** | AFK 模式（离开键盘自动审批） | **Feature Flag** |
-| **`summarize-connector-text-2026-03-13`** | 连接器文本摘要 | **Feature Flag** |
+| 失败场景 | 错误写法 | 正确恢复 |
+|---|---|---|
+| 树上看到 ant-only 工具 | “公开用户只是没打开而已” | 改成身份层隔离，不要写成普通 feature |
+| ant-only 与 feature gate 同时存在 | “只是又一个实验功能” | 写明是双层门控：身份层 + 实验层 |
+| 看到 undercover | “给所有用户的防泄露模式” | 改写成内部贡献公开仓库时的暴露控制机制 |
+| 看到内部 logging / override 入口 | “外部 build 也会走这条日志面” | 先判断 `USER_TYPE`，再决定是否纳入 public path |
 
-```typescript
-// src/constants/betas.ts 第 29-30 行
-export const CLI_INTERNAL_BETA_HEADER =
-  process.env.USER_TYPE === 'ant' ? 'cli-internal-2026-02-09' : ''
-```
+## 边界与误读
 
-`cli-internal` header 意味着 Anthropic 的 API 服务端也维护着一套 ant-only 的服务端行为——这不仅仅是客户端的门控。
+<Warning>
+ant-only 代码存在，不等于 external build 用户“理论上也能触发”。很多时候它表达的是内部组织边界，而不是未公开产品功能。
+</Warning>
 
-## 内部代号体系
+- `ant-only` 和 `feature-gated` 可以叠加，但不是一回事。
+- 不要把内部 world 的存在写成公开 capability backlog。
+- 也不要因为它属于内部世界，就忽略它对产品和组织使用方式的解释力。
+- 对外文档里，最稳妥的写法通常是：**代码证据存在，但当前状态是 ant-only，不应混写成 public feature。**
 
-Anthropic 有浓厚的"动物命名"文化：
+## 场景变体
 
-| 代号 | 身份 | 出处 |
-|------|------|------|
-| **Tengu**（天狗） | Claude Code 项目代号 | 所有 GrowthBook flags 的 `tengu_` 前缀、分析事件名称 |
-| **Capybara**（水豚） | 模型代号 | `src/constants/prompts.ts` 中被 Undercover Mode 屏蔽的名称 |
-| **Fennec**（耳廓狐） | 已退役模型别名 | `src/migrations/migrateFennecToOpus.ts`——曾用名已迁移到 Opus |
+| 场景 | ant-only 最重要的意义 |
+|---|---|
+| 文档写作 | 防止把内部能力写成公开能力 |
+| 逆向研究 | 解释 Anthropic 如何在内部使用这套系统 |
+| 排查行为差异 | 判断 external 与 internal 为什么同树不同面 |
+| 安全与归属 | 理解 undercover / attribution 的存在理由 |
 
-这些代号通过 Undercover Mode 在公开仓库的 commit 中被严格过滤。
+## 先读什么
 
-## 环境变量开关
+- 先读 [三层门禁系统](/docs/internals/three-tier-gating)
+- 再读 [Feature Flags](/docs/internals/feature-flags)
 
-除了 `USER_TYPE`，还有一系列精细的环境变量控制各项功能：
+## 继续读什么
 
-<AccordionGroup>
-  <Accordion title="功能禁用开关">
-    - `CLAUDE_CODE_SIMPLE` — 简化模式（禁用高级功能）
-    - `CLAUDE_CODE_DISABLE_THINKING` — 禁用 thinking
-    - `DISABLE_INTERLEAVED_THINKING` — 禁用交错思考
-    - `DISABLE_COMPACT` — 禁用消息压缩
-    - `DISABLE_AUTO_COMPACT` — 禁用自动压缩
-    - `CLAUDE_CODE_DISABLE_AUTO_MEMORY` — 禁用自动记忆
-    - `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` — 禁用后台任务
-  </Accordion>
-  <Accordion title="功能启用开关">
-    - `CLAUDE_CODE_VERIFY_PLAN` — 启用 VerifyPlanExecutionTool
-    - `ENABLE_LSP_TOOL` — 启用 LSP 语言服务器工具
-    - `CLAUDE_CODE_UNDERCOVER` — 强制启用 Undercover Mode
-    - `CLAUDE_CODE_TERMINAL_RECORDING` — 启用终端录制（asciicast）
-    - `CLAUDE_CODE_ABLATION_BASELINE` — 启用基线对照模式
-  </Accordion>
-  <Accordion title="环境配置">
-    - `CLAUDE_CODE_REMOTE` — 远程执行模式（自动增加堆内存限制）
-    - `CLAUDE_CODE_COORDINATOR_MODE` — 启用 Coordinator 模式
-    - `CLAUDE_INTERNAL_FC_OVERRIDES` — GrowthBook flag 覆盖（ant-only）
-    - `IS_DEMO` — 演示模式（隐藏内部命令和敏感信息）
-  </Accordion>
-</AccordionGroup>
+- [GrowthBook 运行时实验](/docs/internals/growthbook-ab-testing)
+- [隐藏功能巡礼](/docs/internals/hidden-features)
+- [Gating Matrix](/docs/internals/gating-matrix)
 
-<Note>
-`ABLATION_BASELINE` 特别有趣——它同时关闭 thinking、compaction、auto-memory 和 background tasks，用于测量这些高级功能对 AI 表现的**因果影响**。这是一个严肃的"科学对照实验"工具。
-</Note>
+## 相关源码入口
+
+- `src/tools.ts`
+- `src/utils/undercover.ts`
+- `src/setup.ts`
+- `src/services/analytics/growthbook.ts`
+
+## 本页证据等级
+
+- `ant-only`: [src/tools.ts](/Users/admin/work/claude-code-docs-sweep/src/tools.ts), [src/utils/undercover.ts](/Users/admin/work/claude-code-docs-sweep/src/utils/undercover.ts), [src/setup.ts](/Users/admin/work/claude-code-docs-sweep/src/setup.ts)
+- `inference`: “身份边界改变系统对外说话方式与归属策略”是对 undercover / attribution 路径的结构总结

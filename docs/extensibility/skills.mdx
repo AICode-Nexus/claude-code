@@ -219,3 +219,22 @@ score = usageCount × max(0.5^(daysSinceUse / 7), 0.1)
   ↓ contextModifier() → 注入 allowedTools + model + effort
   ↓ recordSkillUsage() → 更新使用频率排名
 ```
+
+## 先读什么
+
+1. [命令系统](/docs/extensibility/command-system)
+
+## 继续读什么
+
+- [Skills 排名与预算](/docs/extensibility/skills-ranking-and-budgeting)
+- [自定义 Agent](/docs/extensibility/custom-agents)
+
+## 相关源码入口
+
+- `src/skills/loadSkillsDir.ts`
+- `src/tools/SkillTool/*`
+- `src/commands.ts`
+
+## 本页证据等级
+
+- `external build active`: skill loading、执行、权限

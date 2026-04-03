@@ -224,3 +224,22 @@ const DEFAULT_SM_COMPACT_CONFIG = {
 ```
 
 SM-compact 不调用压缩 API（没有摘要模型），而是直接使用已有的 Session Memory 作为摘要——更快、更便宜、且不会丢失信息。
+
+## 先读什么
+
+1. [记忆分层](/docs/context/memory-layers)
+
+## 继续读什么
+
+- [CLAUDE.md 与上下文装载](/docs/context/claude-md-and-context-loading)
+- [压缩边界与 PTL](/docs/context/compaction-boundaries-and-ptl)
+
+## 相关源码入口
+
+- `src/services/SessionMemory/*`
+- `src/memdir/*`
+- `src/services/teamMemorySync/*`
+
+## 本页证据等级
+
+- `external build active`: 项目记忆与 session memory

@@ -1,87 +1,120 @@
 ---
-title: "三层门禁系统 - 功能可见性控制架构"
-description: "详解 Claude Code 三层门禁系统：构建时 feature()、运行时 GrowthBook 和身份层 USER_TYPE，如何控制功能的可见性和灰度发布。"
-keywords: ["门禁系统", "功能门控", "feature flag", "灰度发布", "可见性控制"]
+title: "三层门禁系统 - external build、运行时实验和 ant-only 世界怎么分开看"
+description: "把 Claude Code 当前仓库的门禁体系讲成一张真正可用的坐标图：build-time feature、runtime GrowthBook 和 ant-only 条件分别限制什么，为什么它们不能混写。"
+keywords: ["three tier gating", "feature flags", "GrowthBook", "ant-only", "external build"]
 ---
 
-{/* 本章目标：建立对三层门禁系统的全局认知，为后续四篇深入文章奠定坐标系 */}
+## 一句话结论
 
-## 冰山一角
+理解这个仓库最重要的前提不是某个工具怎么实现，而是先分清 **构建层、运行时层、身份层** 三种门禁；它们都能让某个能力“看得见但跑不到”，但原因完全不同。
 
-你日常使用的 Claude Code，只是完整代码库的冰山一角。
+## 三层门禁总表
 
-逆向工程揭示了一个事实：大量功能被精心"藏"在三层独立的门禁系统之后。有些是正在 A/B 测试的实验性功能，有些是仅限 Anthropic 员工使用的内部工具，还有些是尚未对外发布的下一代能力。
+| 层级 | 典型机制 | 它决定什么 | 典型误读 |
+|---|---|---|---|
+| 构建层 | `feature('...')`、bundler DCE、入口常量 | 某段代码在当前 external build 是否进入活跃世界 | 把树上存在直接写成当前功能 |
+| 运行时层 | GrowthBook、env、policy、auth | 已编进构建的能力对当前会话是否开放 | 把运行时 kill-switch 写成“代码已删除” |
+| 身份层 | `USER_TYPE === 'ant'` 等条件 | 某些内部能力是否只对 ant 世界可见 | 把 ant-only 误写成 feature-gated |
 
-> 我们在 `src/` 中发现了 88+ 个构建时 feature flags、500+ 个运行时 A/B 测试标记，以及一整套身份门控机制。
+## 为什么一定要拆成三层
 
-## 三层门禁全景
+如果只说“这个功能被 gate 住了”，维护上几乎没有帮助，因为三层 gate 的排查动作完全不同：
 
-| 维度 | 第一层：构建时 `feature()` | 第二层：运行时 GrowthBook | 第三层：身份 `USER_TYPE` |
-|------|---------------------------|--------------------------|-------------------------|
-| **控制方式** | `bun:bundle` 编译时宏 | GrowthBook SDK 远程求值 | 构建时 `--define` 常量 |
-| **决策时机** | 打包时（代码直接被删除） | 启动时 + 定期刷新 | 打包时（常量折叠） |
-| **粒度** | 全有或全无 | 按用户/设备/组织定向 | 按构建版本（ant / external） |
-| **标记数量** | 88+ | 500+ (`tengu_*` 前缀) | 1（`ant` vs `external`） |
-| **逆向可见性** | 代码残留，但永远走 `false` 分支 | 完整 SDK 代码可读 | 条件分支清晰可见 |
+- 构建层没开时，你该判断它是不是当前 external build 的事实。
+- 运行时没开时，你该看 GrowthBook、env、policy、auth。
+- 身份层没过时，你该明确标注 ant-only，而不是继续推断公开用户能否触发。
 
-## 决策流程
+也就是说，三层门禁不是术语洁癖，而是 **决定你下一步该看哪里** 的坐标图。
 
-当一个功能请求进入 Claude Code，它会依次经过三层门禁的检查：
+## 正常链路
 
-```
-功能请求
-  │
-  ▼
-┌─────────────────────────┐
-│  第一层：feature('X')    │ ──── 编译时已决定 ──→ false → 代码被 DCE 移除
-│  (构建时 Feature Flag)   │
-└─────────┬───────────────┘
-          │ true (仅内部构建)
-          ▼
-┌─────────────────────────┐
-│  第二层：tengu_xxx       │ ──── 运行时按用户属性 ──→ 不在实验组 → 功能关闭
-│  (GrowthBook A/B 测试)   │
-└─────────┬───────────────┘
-          │ 在实验组
-          ▼
-┌─────────────────────────┐
-│  第三层：USER_TYPE       │ ──── ant? external? ──→ external → 功能不可用
-│  (身份门控)              │
-└─────────┬───────────────┘
-          │ ant
-          ▼
-      功能可用 ✓
+```mermaid
+flowchart TD
+  tree["source tree"] --> build["构建层<br/>feature() / DCE / entry constants"]
+  build --> runtime["运行时层<br/>GrowthBook / env / policy / auth"]
+  runtime --> identity["身份层<br/>USER_TYPE / account world"]
+  identity --> surface["最终用户可见能力面"]
 ```
 
-三层门禁**相互独立**，一个功能可能同时受多层控制。例如，KAIROS 助手模式同时需要 `feature('KAIROS')` 构建时开启 **和** `tengu_kairos` 运行时实验命中。
+## 关键结构 / 状态
 
-## 逆向工程揭示了什么
+| 源码入口 | 它代表哪一层 | 应该怎么读 |
+|---|---|---|
+| `src/entrypoints/cli.tsx` | 构建层 | 入口显式把 external build 读法固定下来，尤其是 `feature() => false` 与 `BUILD_TARGET='external'` |
+| `src/tools.ts` | 构建层 + 身份层 | 同时存在 `feature('...')` 和 `USER_TYPE === 'ant'` 两类分支 |
+| `src/services/analytics/growthbook.ts` | 运行时层 | 既有 blocking init，也有 `getFeatureValue_CACHED_MAY_BE_STALE()` 这类 startup-friendly 读取 |
+| `src/main.tsx` | 三层汇流点 | 很多能力先过 `feature()`，再过 runtime gate，最后还可能看 auth/policy |
 
-在这个反编译版本中：
+## 一个端到端例子
 
-- **第一层**完全透明——`feature()` 被兜底为 `() => false`，所有 88+ 个 flag 的代码路径都可以阅读，只是永远不会执行
-- **第二层**完整保留——GrowthBook SDK 的 1156 行代码完整可读，包括用户定向属性、缓存策略、覆盖机制
-- **第三层**清晰可见——`process.env.USER_TYPE === 'ant'` 出现在 60+ 个位置，每一处都标记着"仅限内部"的功能边界
+以某个实验能力为例，完整判断顺序应该是：
 
-<Note>
-这三层门禁不是安全机制——它们是产品发布策略。目的是让 Anthropic 能够在不同用户群体中渐进式地测试和发布功能，而不是阻止逆向工程。
-</Note>
+1. 树上看见相关模块和 `feature('X')` 调用。
+2. 先问：当前 external build 里，这个 `feature('X')` 有没有机会进入热路径？
+3. 如果构建层没问题，再问：运行时是否还有 GrowthBook / env / policy / auth 条件？
+4. 如果还要 `USER_TYPE === 'ant'`，那就必须落到 `ant-only`，不能继续写成“公开用户可能启用”。
 
-## 接下来
+这就是为什么“三层门禁”不是理论总结，而是实际写文档和排障时的判题器。
 
-后续四篇文章将分别深入每一层门禁的细节：
+## 失败与恢复
+
+| 失败方式 | 会造成什么 | 正确恢复动作 |
+|---|---|---|
+| 把三层 gate 混成一个“开关” | 文档会把 build/runtime/internal 世界写糊 | 先判断你面对的是哪一层 gate |
+| 把 ant-only 当 feature-gated | 读者会以为公开 build 只是没默认开启 | 明确改写为身份层隔离 |
+| 只看 GrowthBook 不看 `feature()` | 会在根本没进构建的能力上做 runtime 推断 | 先过构建层再谈运行时层 |
+| 只看 `feature()` 不看 policy/auth | 会把“代码可见”误写成“当前用户能用” | 把运行时层补回来 |
+
+## 边界与误读
+
+<Warning>
+“树上有代码”只说明它是证据，不说明它是当前 external build 的产品事实。
+</Warning>
+
+- `feature-gated` 不等于 `ant-only`。
+- `ant-only` 也不等于“未来可能公开”；它只表示当前边界在身份层。
+- GrowthBook / env / policy 是运行时层，不要混成 build-time gate。
+- 入口层 `feature() => false` 会强烈影响 external build 的阅读方式，但不代表仓库里只存在一种 gate。
+
+## 场景变体
+
+| 你在做什么 | 先看哪层 |
+|---|---|
+| 判断某能力是不是当前 external build 事实 | 构建层 |
+| 判断为什么某用户/组织看不到某能力 | 运行时层 |
+| 判断某能力是否只属于内部世界 | 身份层 |
+| 修文档漂移 | 三层都要过一遍 |
+
+## 先读什么
+
+- 先读 [什么是 Claude Code](/docs/introduction/what-is-claude-code)
+- 再读 [Feature Flags](/docs/internals/feature-flags)
+
+## 继续读什么
 
 <CardGroup cols={2}>
-  <Card title="88 面旗帜" icon="flag" href="/docs/internals/feature-flags">
-    构建时 Feature Flags 的完整分类与解读
+  <Card title="Feature Flags" icon="flag" href="/docs/internals/feature-flags">
+    看 build-time gates 的证据和分类。
   </Card>
-  <Card title="千面千人" icon="flask" href="/docs/internals/growthbook-ab-testing">
-    GrowthBook A/B 测试体系的运作机制
+  <Card title="Gating Matrix" icon="table" href="/docs/internals/gating-matrix">
+    用矩阵直接对照 active、gated、ant-only 和 stub。
   </Card>
-  <Card title="未公开功能巡礼" icon="eye" href="/docs/internals/hidden-features">
-    KAIROS、PROACTIVE 等 8 大隐藏功能深度解析
+  <Card title="GrowthBook 体系" icon="flask" href="/docs/internals/growthbook-ab-testing">
+    看运行时实验层。
   </Card>
-  <Card title="Ant 的特权世界" icon="shield" href="/docs/internals/ant-only-world">
-    Anthropic 员工专属的工具、命令与 API
+  <Card title="Ant 特权世界" icon="shield" href="/docs/internals/ant-only-world">
+    看身份层边界。
   </Card>
 </CardGroup>
+
+## 相关源码入口
+
+- `src/entrypoints/cli.tsx`
+- `src/tools.ts`
+- `src/main.tsx`
+- `src/services/analytics/growthbook.ts`
+
+## 本页证据等级
+
+- `external build active`: [src/entrypoints/cli.tsx](/Users/admin/work/claude-code-docs-sweep/src/entrypoints/cli.tsx), [src/tools.ts](/Users/admin/work/claude-code-docs-sweep/src/tools.ts), [src/main.tsx](/Users/admin/work/claude-code-docs-sweep/src/main.tsx), [src/services/analytics/growthbook.ts](/Users/admin/work/claude-code-docs-sweep/src/services/analytics/growthbook.ts)
+- `docs drift corrected`: active、feature-gated、ant-only 不再被混写成同一类状态

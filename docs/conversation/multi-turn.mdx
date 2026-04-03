@@ -182,3 +182,22 @@ query({ model: newModel, messages: this.mutableMessages })
 ## 文件快照与回滚
 
 `fileHistoryMakeSnapshot()`（`src/utils/fileHistory.ts`）在 AI 每次修改文件前自动保存当前内容。快照绑定到具体的 `message.id`，使得 `--rewind-files <user-message-id>` 可以精确恢复到对话中任意时间点的文件状态——这比 git 更细粒度（git 只追踪已提交的内容）。
+
+## 先读什么
+
+1. [交互与 Headless 分叉](/docs/introduction/interactive-vs-headless)
+
+## 继续读什么
+
+- [会话存储与恢复](/docs/runtime/session-storage-and-resume)
+- [消息队列与 Prompt 调度](/docs/runtime/message-queue-and-prompt-scheduling)
+
+## 相关源码入口
+
+- `src/QueryEngine.ts`
+- `src/cli/print.ts`
+- `src/utils/sessionStorage.ts`
+
+## 本页证据等级
+
+- `external build active`: QueryEngine、transcript、resume

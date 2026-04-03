@@ -189,3 +189,21 @@ getRemoteMcpServerConnectionBatchSize()  // 默认 20
 ```
 
 配置后，AI 的工具列表中会出现 `mcp__my-database__query` 和 `mcp__remote-api__*` 工具——与内置工具使用相同的权限检查链路和 UI 渲染。
+
+## 先读什么
+
+1. [命令系统](/docs/extensibility/command-system)
+
+## 继续读什么
+
+- [MCP 连接生命周期](/docs/extensibility/mcp-connection-lifecycle)
+- [工具池装配](/docs/tools/tool-pool-assembly)
+
+## 相关源码入口
+
+- `src/services/mcp/client.ts`
+- `src/services/mcp/config.js`
+
+## 本页证据等级
+
+- `external build active`: MCP transport、tool/resource 注入

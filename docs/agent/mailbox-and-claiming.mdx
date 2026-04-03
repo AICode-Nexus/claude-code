@@ -1,0 +1,145 @@
+---
+title: "Mailbox 与任务认领 - 多 Agent 协作靠什么避免撞车"
+description: "讲清 mailbox、claiming、任务所有权和通知回流：多 Agent 协作时，系统如何减少重复工作、如何把结果回传给主会话。"
+keywords: ["mailbox", "claiming", "multi-agent", "ownership", "notifications"]
+---
+
+## 一句话结论
+
+多 Agent 协作真正值钱的不是“能并行跑几个执行体”，而是 **任务认领 + mailbox 回流 + 主会话止损** 这三件事能不能形成一套共享协议。
+
+## 状态标签总览
+
+| 机制 | 当前状态 | 说明 |
+|---|---|---|
+| 任务认领与 owner 语义 | `external build active` | 共享任务图时防止重复执行 |
+| file-based teammate mailbox | `external build active` | 队友间消息通过 inbox 文件持久化 |
+| team lead 轮询 unread 消息 | `external build active` | print/headless 显式有一条 polling 与回流链 |
+| teammate 退出后的任务解绑 | `external build active` | shutdown / terminated 后把悬挂任务重新放回池子 |
+| 更大范围的 swarm / coordinator 玩法 | 混合 `external build active` / `feature-gated` | 编排模式会变，但 claiming 与回流协议本身仍是基础层 |
+
+## 为什么存在
+
+“并行”本身不难，真正难的是下面这三件事同时成立：
+
+1. 同一件工作不会被两个 agent 重复做。
+2. 做完的结果能可靠回到主会话，而不是散落在子线程里。
+3. 某个 agent 中途退出时，系统知道哪些任务要回收、哪些消息要标记为已处理。
+
+如果没有 mailbox 和 claiming，多 agent 很容易变成一种昂贵的幻觉：
+
+- 看起来大家都在忙。
+- 实际上有人重复搜索、重复改、重复汇报。
+- 主会话还不知道哪些结果是最终结果、哪些只是中间噪音。
+
+## 正常链路
+
+```mermaid
+flowchart TD
+  graph["共享 task graph"] --> claim["claimTask() / owner"]
+  claim --> work["teammate 执行"]
+  work --> mailbox["~/.claude/teams/<team>/inboxes/<agent>.json"]
+  mailbox --> lead["team lead 轮询 unread"]
+  lead --> enqueue["格式化为 teammate message 并入主队列"]
+  enqueue --> main["主会话看到回流结果"]
+  work --> shutdown["teammate 退出 / shutdown"]
+  shutdown --> unassign["unassignTeammateTasks() 释放悬挂任务"]
+```
+
+## 关键结构 / 状态
+
+| 结构 | 作用 | 源码事实 |
+|---|---|---|
+| `owner` | 标记当前任务由谁负责 | 在 `src/utils/tasks.ts` 中直接参与 claim 成败 |
+| inbox 文件 | 队友间消息持久化通道 | `src/utils/teammateMailbox.ts` 把 inbox 落到 `~/.claude/teams/...` |
+| lockfile | 防并发写坏邮箱 | mailbox 写入和标记已读都走锁 |
+| unread / read 标记 | 防止消息重复处理 | team lead 读取后会先 mark as read |
+| shutdown unassign | 队友退出后的任务回收 | `unassignTeammateTasks()` 把 owner 清空并重置状态 |
+
+这说明 mailbox 不是“临时缓冲区”，而是一个 **带锁的、可重读的、可标记已处理的文件通道**。
+
+## 一个端到端例子
+
+假设 team lead 把三项工作分给两个 teammate：
+
+1. A 搜索受影响文件。
+2. B 起草修复方案。
+3. B 等 A 完成后再补验证。
+
+正常情况下会发生：
+
+1. A、B 先各自 claim 自己的任务，任务图里 owner 不再为空。
+2. A 完成搜索后，把结果写入 team lead 的 mailbox。
+3. team lead 轮询 unread 邮件，发现有新消息，先标记已读，再把内容格式化成 `TEAMMATE_MESSAGE_TAG` 注入主队列。
+4. 主会话收到回流结果后，才能决定 B 的下游任务是否解锁、如何继续。
+
+这里真正重要的不是“消息被发出来”，而是 **消息和任务所有权一起回流**。否则主会话只会看到一堆并行噪音。
+
+## 为什么不是更简单的设计
+
+一种更简单的方案是：每个 agent 做完事后直接往 stdout 打一段文本。
+
+这个方案看起来省事，但会立刻失去：
+
+- 已读/未读状态，消息可能被重复处理。
+- 锁保护，多 agent 同时写时容易乱。
+- 退出回收语义，主会话不知道某 agent 掉线时该怎么处理悬挂任务。
+- 结构化回流，主会话无法稳定区分 teammate message 和普通输出。
+
+当前实现选择 file-based mailbox，不是因为它最优雅，而是因为它足够稳：**可持久化、可加锁、可轮询、可恢复**。
+
+## 失败与恢复
+
+| 失败场景 | 当前表现 | 恢复方式 |
+|---|---|---|
+| 两个 agent 重复做一项任务 | 任务 owner 冲突或 claim 失败 | 回到 `claimTask()` 与 owner 状态排查 |
+| mailbox 消息重复进入主会话 | unread 没及时转 read | 先 mark as read 再 enqueue，避免二次消费 |
+| teammate 正常关闭但任务还挂在它名下 | 主会话后续认为任务仍被占用 | `unassignTeammateTasks()` 把 owner 清空并设回 `pending` |
+| teammate 被终止后主会话无感知 | 结果和任务都悬空 | 通过 shutdown/terminated 路径发通知并回收任务 |
+| 多 agent 同时写 inbox | 邮箱文件损坏或消息丢失 | mailbox 写路径用 lockfile 串行化 |
+
+一个非常关键的止损动作是：**先读 unread，立刻 mark as read，再把消息回灌到主队列**。这不是实现细节，而是避免重复回流的核心顺序。
+
+## 边界与误读
+
+<Warning>
+并行不等于协作。没有 claiming 和 mailbox，所谓多 agent 往往只是“多人同时做重复劳动”。
+</Warning>
+
+- 不要把 mailbox 误解成 UI 提示框；它是文件级消息通道。
+- 不要把 claiming 误解成“写个 owner 字段”；真正重要的是 claim 成败和退出后的回收语义。
+- 不要把 teammate 输出直接当最终结论；主会话是否接收、如何继续，仍要经过回流与调度。
+- 不要把所有多 agent 机制都混成 coordinator mode；即便编排模式不同，任务认领和消息回流仍是底层共同问题。
+
+## 场景变体
+
+| 场景 | mailbox / claiming 的重点 |
+|---|---|
+| in-process teammate | 共享任务图，强调 owner 与 UI 回流 |
+| print/headless 团队运行 | 明确轮询 unread 并把消息注入主队列 |
+| teammate shutdown | 回收 owner、发通知、避免任务永远卡住 |
+| 大型 swarm | 认领协议比“再多开几个 agent”更重要 |
+
+## 先读什么
+
+- 先读 [任务系统 V2](/docs/agent/task-system-v2)
+- 再读 [子 Agent 机制](/docs/agent/sub-agents)
+
+## 继续读什么
+
+- [异步 Agent 生命周期](/docs/agent/async-agent-lifecycle)
+- [后台任务与 housekeeping](/docs/runtime/background-tasks-and-housekeeping)
+- [运行时控制平面](/docs/runtime/app-state-control-plane)
+
+## 相关源码入口
+
+- `src/utils/teammateMailbox.ts`
+- `src/utils/tasks.ts`
+- `src/cli/print.ts`
+- `src/utils/swarm/*`
+- `src/tasks/InProcessTeammateTask/*`
+
+## 本页证据等级
+
+- `external build active`: [src/utils/teammateMailbox.ts](/Users/admin/work/claude-code-docs-sweep/src/utils/teammateMailbox.ts), [src/utils/tasks.ts](/Users/admin/work/claude-code-docs-sweep/src/utils/tasks.ts), [src/cli/print.ts](/Users/admin/work/claude-code-docs-sweep/src/cli/print.ts)
+- `inference`: “file-based mailbox 为什么比直接 stdout 更适合协作恢复”是基于当前实现约束给出的系统解释

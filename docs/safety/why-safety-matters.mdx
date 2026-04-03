@@ -180,3 +180,23 @@ Bash("rm -rf node_modules")  → ⚠️ 需确认（不可逆）
 防御：即使管道段独立检查通过，仍对原始命令重新验证路径约束
       检查重定向目标中的危险模式（反引号、$()）（bashPermissions.ts:1992-2056）
 ```
+
+## 先读什么
+
+1. [什么是 Claude Code](/docs/introduction/what-is-claude-code)
+
+## 继续读什么
+
+- [信任边界](/docs/safety/trust-boundaries)
+- [Prompt Injection 防御](/docs/safety/prompt-injection-defense)
+- [权限规则手册](/docs/safety/permission-rule-cookbook)
+
+## 相关源码入口
+
+- `src/utils/permissions/*`
+- `src/tools/BashTool/*`
+- `src/utils/sandbox/*`
+
+## 本页证据等级
+
+- `external build active`: 权限、沙箱、Plan Mode、Hooks

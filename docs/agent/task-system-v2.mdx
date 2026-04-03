@@ -1,0 +1,149 @@
+---
+title: "任务系统 V2 - TodoWrite 之外的持久化任务图"
+description: "把 Tasks V2 单独拎出来：任务 ID、依赖关系、状态流转、输出落盘和主会话通知回流，解释为什么这不是一个花哨版 todo list。"
+keywords: ["task system v2", "tasks", "blockedBy", "blocks", "notifications"]
+---
+
+## 一句话结论
+
+Tasks V2 不是 TodoWrite 的豪华皮肤，而是一套 **带文件级持久化、依赖边、所有权和认领语义** 的任务图基础设施，专门为后台 agent、共享任务列表和可恢复执行准备。
+
+## 状态标签总览
+
+| 主题 | 当前状态 | 说明 |
+|---|---|---|
+| Task JSON 持久化 | `external build active` | 任务是落盘实体，不是只活在当前 prompt 里 |
+| `blockedBy` / `blocks` 依赖边 | `external build active` | 任务图语义是 V2 的核心区别 |
+| `owner` / claim 流程 | `external build active` | 解决多人或多 agent 抢同一任务的问题 |
+| 任务文件锁与 high water mark | `external build active` | 保证并发安全和 ID 不回收复用 |
+| 任务 watcher 自动拾取 | `external build active` | 有 task list 时可自动认领并提交 |
+
+## 为什么存在
+
+如果系统只需要“提醒模型还有哪些待办”，TodoWrite 已经够用。但一旦进入下面这些场景，列表式 todo 就不够了：
+
+- 任务之间有先后依赖，不能乱序执行。
+- 多个 agent 共享同一批任务，需要防止撞车。
+- 某个执行体退出后，结果和状态仍要可恢复。
+- 任务完成后要自动解锁下游任务，而不是靠模型重新猜一遍。
+
+这就是 Tasks V2 的设计起点：把“任务”从提示词里的临时文本，升级成 **文件系统上的共享状态机**。
+
+## 正常链路
+
+```mermaid
+flowchart LR
+  create["TaskCreate / updateTask()"] --> disk["tasks/*.json 持久化"]
+  disk --> graph["blocks / blockedBy / owner / status"]
+  graph --> claim["claimTask() 认领"]
+  claim --> exec["agent / watcher 执行"]
+  exec --> update["TaskUpdate / output / complete"]
+  update --> unlock["解锁下游 blockedBy"]
+  update --> notify["主会话或任务 UI 刷新"]
+```
+
+## 关键结构 / 状态
+
+| 字段 / 机制 | 作用 | 为什么不是装饰字段 |
+|---|---|---|
+| `id` | 稳定任务 ID | 便于跨文件、跨 agent、跨会话引用 |
+| `subject` / `description` | 任务主体与补充说明 | 既用于 UI，也用于 watcher 自动提交 prompt |
+| `status` | `pending` / `in_progress` / `completed` 等 | 决定是否还能阻塞别人 |
+| `owner` | 当前由谁负责 | 没有 owner 就无法可靠避免重复执行 |
+| `blocks` | 这个任务完成后会解锁谁 | 表示下游依赖边 |
+| `blockedBy` | 当前任务依赖谁先完成 | 表示上游依赖边 |
+| 高水位文件 | 记录最大已分配 ID | reset 后也不回收旧 ID，减少引用混乱 |
+| 文件锁 | claim / update / reset 的并发安全 | 多 agent 环境里不是可选项 |
+
+从 [src/utils/tasks.ts](/Users/admin/work/claude-code-docs-sweep/src/utils/tasks.ts) 可以看到，V2 的真正分水岭不在 UI，而在于：
+
+- 任务有 schema。
+- 任务有锁。
+- 任务有 claim 结果类型。
+- 任务能在 reset 后保持 ID 单调递增。
+
+## 一个端到端例子
+
+假设我们把一次代码修改拆成三项：
+
+1. `#1` 搜索受影响文件
+2. `#2` 修改实现，`blockedBy: ['1']`
+3. `#3` 跑验证，`blockedBy: ['2']`
+
+这时真实链路是：
+
+1. 三个任务以 JSON 形式写入任务目录。
+2. `#2` 与 `#3` 带着依赖边存在，但不会被视为可执行。
+3. watcher 或 agent 先通过 `claimTask()` 认领 `#1`。
+4. `#1` 完成后，`status` 变更，`#2` 才会从 blocked 进入可执行状态。
+5. `#2` 被认领并完成后，`#3` 才会解锁。
+
+这里系统不是“建议模型按顺序做”，而是 **在数据结构层阻止顺序被破坏**。
+
+## 为什么不是更简单的设计
+
+把任务图降回简单列表，会立刻失去四种能力：
+
+1. 无法表达“谁在阻塞谁”。
+2. 无法原子地认领任务。
+3. 无法在 agent 崩掉或退出后恢复共享状态。
+4. 无法把“一个人只能同时持有多少未完成任务”做成可验证规则。
+
+`claimTask()` 甚至有 `checkAgentBusy` 分支，说明设计目标不是“能标记 owner 就行”，而是要把 **认领 + 忙闲判断** 做成原子过程。
+
+## 失败与恢复
+
+| 失败场景 | 当前表现 | 恢复方式 |
+|---|---|---|
+| 两个 agent 同时抢一项任务 | `claimTask()` 返回 `already_claimed` | 保留 task-level 或 task-list-level lock，不要绕开 |
+| 任务上游未完成 | `claimTask()` 返回 `blocked` 与 `blockedByTasks` | 先完成上游，再重试认领 |
+| 某 agent 已经持有未完成任务 | busy-check 分支返回 `agent_busy` | 让它先收尾，或显式重新分配 |
+| 任务列表重置后 ID 混乱 | 外部引用失效 | 高水位文件保证 reset 后仍不复用旧 ID |
+| watcher 提交失败 | 当前任务 claim 被释放 | `useTaskListWatcher()` 会把 `owner` 清空，避免悬挂占有 |
+
+值得注意的是，恢复路径里不只有“重试”。有些时候系统的止损动作是 **释放 claim、保留文件、等待下一轮拾取**，这比盲目重跑更重要。
+
+## 边界与误读
+
+<Warning>
+Tasks V2 的重点不是“有更多字段”，而是这些字段与锁、watcher、claim 结果一起构成了真正的任务图协议。
+</Warning>
+
+- 不要把 V2 写成 TodoWrite 的 UI 升级版；它们解决的问题不同。
+- 不要把 `owner` 当备注字段；在 V2 里它直接影响 claim 语义和忙闲判断。
+- 不要把 `blockedBy` / `blocks` 当展示关系；它们是调度边界的一部分。
+- 不要假设 reset 后 ID 会回到 1；高水位文件就是为了避免这种引用漂移。
+
+## 场景变体
+
+| 场景 | V2 的价值重点 |
+|---|---|
+| 单 agent 长任务 | 持久化、可恢复、UI 可追踪 |
+| 多 agent 协作 | owner / claim / busy check / unblock |
+| tasks mode | watcher 自动拾取可执行任务 |
+| 主会话恢复 | JSON 任务图比 prompt 内 todo 更稳定 |
+
+## 先读什么
+
+- 先读 [任务管理系统](/docs/tools/task-management)
+- 再读 [子 Agent 机制](/docs/agent/sub-agents)
+
+## 继续读什么
+
+- [Mailbox 与任务认领](/docs/agent/mailbox-and-claiming)
+- [异步 Agent 生命周期](/docs/agent/async-agent-lifecycle)
+- [后台任务与 housekeeping](/docs/runtime/background-tasks-and-housekeeping)
+
+## 相关源码入口
+
+- `src/utils/tasks.ts`
+- `src/hooks/useTaskListWatcher.ts`
+- `src/hooks/useTasksV2.ts`
+- `src/tools/TaskGetTool/TaskGetTool.ts`
+- `src/tools/TaskCreateTool/*`
+- `src/tools/TaskUpdateTool/*`
+
+## 本页证据等级
+
+- `external build active`: [src/utils/tasks.ts](/Users/admin/work/claude-code-docs-sweep/src/utils/tasks.ts), [src/hooks/useTaskListWatcher.ts](/Users/admin/work/claude-code-docs-sweep/src/hooks/useTaskListWatcher.ts), [src/hooks/useTasksV2.ts](/Users/admin/work/claude-code-docs-sweep/src/hooks/useTasksV2.ts), [src/tools/TaskGetTool/TaskGetTool.ts](/Users/admin/work/claude-code-docs-sweep/src/tools/TaskGetTool/TaskGetTool.ts)
+- `inference`: “为什么任务图比 TodoWrite 更适合多 agent 协作”是基于当前实现边界的系统解释

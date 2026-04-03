@@ -18,9 +18,21 @@
             "pages": [
               "docs/introduction/what-is-claude-code",
               "docs/introduction/why-this-whitepaper",
-              "docs/introduction/architecture-overview"
+              "docs/introduction/architecture-overview",
+              "docs/introduction/runtime-and-build",
+              "docs/introduction/interactive-vs-headless",
+              "docs/introduction/reading-order-and-source-map"
             ]
           }
+        ]
+      },
+      {
+        "group": "运行时与控制平面",
+        "pages": [
+          "docs/runtime/app-state-control-plane",
+          "docs/runtime/message-queue-and-prompt-scheduling",
+          "docs/runtime/session-storage-and-resume",
+          "docs/runtime/background-tasks-and-housekeeping"
         ]
       },
       {
@@ -28,7 +40,10 @@
         "pages": [
           "docs/conversation/the-loop",
           "docs/conversation/streaming",
-          "docs/conversation/multi-turn"
+          "docs/conversation/multi-turn",
+          "docs/conversation/single-turn-state-machine",
+          "docs/conversation/stream-events-and-watchdog",
+          "docs/conversation/recovery-and-fallback"
         ]
       },
       {
@@ -38,7 +53,10 @@
           "docs/tools/file-operations",
           "docs/tools/shell-execution",
           "docs/tools/search-and-navigation",
-          "docs/tools/task-management"
+          "docs/tools/task-management",
+          "docs/tools/tool-pool-assembly",
+          "docs/tools/tool-result-budgeting",
+          "docs/tools/tool-rendering-and-progress"
         ]
       },
       {
@@ -47,7 +65,10 @@
           "docs/safety/why-safety-matters",
           "docs/safety/permission-model",
           "docs/safety/sandbox",
-          "docs/safety/plan-mode"
+          "docs/safety/plan-mode",
+          "docs/safety/trust-boundaries",
+          "docs/safety/prompt-injection-defense",
+          "docs/safety/permission-rule-cookbook"
         ]
       },
       {
@@ -56,7 +77,10 @@
           "docs/context/system-prompt",
           "docs/context/project-memory",
           "docs/context/compaction",
-          "docs/context/token-budget"
+          "docs/context/token-budget",
+          "docs/context/claude-md-and-context-loading",
+          "docs/context/memory-layers",
+          "docs/context/compaction-boundaries-and-ptl"
         ]
       },
       {
@@ -64,7 +88,10 @@
         "pages": [
           "docs/agent/sub-agents",
           "docs/agent/worktree-isolation",
-          "docs/agent/coordinator-and-swarm"
+          "docs/agent/coordinator-and-swarm",
+          "docs/agent/task-system-v2",
+          "docs/agent/mailbox-and-claiming",
+          "docs/agent/async-agent-lifecycle"
         ]
       },
       {
@@ -73,13 +100,19 @@
           "docs/extensibility/mcp-protocol",
           "docs/extensibility/hooks",
           "docs/extensibility/skills",
-          "docs/extensibility/custom-agents"
+          "docs/extensibility/custom-agents",
+          "docs/extensibility/command-system",
+          "docs/extensibility/mcp-connection-lifecycle",
+          "docs/extensibility/hooks-recipes-and-patterns",
+          "docs/extensibility/skills-ranking-and-budgeting",
+          "docs/extensibility/plugin-status-and-drift"
         ]
       },
       {
         "group": "研究",
         "pages": [
-          "docs/research/project-capability-atlas"
+          "docs/research/project-capability-atlas",
+          "docs/research/docs-drift-matrix"
         ]
       },
       {
@@ -89,7 +122,9 @@
           "docs/internals/feature-flags",
           "docs/internals/growthbook-ab-testing",
           "docs/internals/hidden-features",
-          "docs/internals/ant-only-world"
+          "docs/internals/ant-only-world",
+          "docs/internals/gating-matrix",
+          "docs/internals/hidden-feature-roadmap"
         ]
       }
     ]

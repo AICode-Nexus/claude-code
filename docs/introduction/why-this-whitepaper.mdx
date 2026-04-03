@@ -1,121 +1,120 @@
 ---
-title: "为什么写这份白皮书 - Claude Code 逆向工程分析"
-description: "对 Anthropic 官方 Claude Code CLI 的逆向工程分析白皮书。通过反编译 TypeScript 单文件 bundle，深入解析运行时行为与源码结构。"
-keywords: ["Claude Code", "逆向工程", "白皮书", "反编译", "TypeScript"]
+title: "为什么写这份白皮书 - 逆向工程而不是产品宣传"
+description: "说明这套文档站的目标、边界和阅读方法：它是基于当前仓库的逆向工程白皮书，不是官方使用教程，也不是功能营销页。"
+keywords: ["白皮书", "reverse engineering", "文档边界", "阅读路线图", "Claude Code"]
 ---
 
-## 这份白皮书是什么
+## 一句话结论
 
-这是对 Anthropic 官方发布的 **Claude Code CLI** 的**逆向工程分析**。
+这套文档站的目标不是教你“如何开始用 Claude Code”，而是告诉你“当前这个仓库到底会运行什么、为什么这样设计、哪些地方最容易被误读”。
 
-源码经过反编译处理（TypeScript 单文件 bundle 逆向），保留了核心功能模块，但包含大量 `unknown`/`never`/`{}` 类型错误——这些不影响 Bun 运行时执行，但意味着我们的分析基于运行时行为 + 残留源码结构，而非原始源码。
+## 30 秒摘要
 
-**这不是：**
-- 官方文档或使用教程
-- API 参考手册
-- Claude Code 的功能推销
+| 这份文档是什么 | 这份文档不是什么 |
+|---|---|
+| 基于当前仓库的源码白皮书 | 官方产品文档 |
+| 面向维护者、逆向研究者、深度用户 | 入门式操作教程 |
+| 强调 active path、gated path、drift、failure mode | 功能亮点清单 |
 
-**这是：**
-- 一个生产级 agentic system 的架构解构
-- 每个设计决策背后的"为什么"
-- 可复用的工程模式：agentic loop、工具抽象、上下文工程、安全纵深防御
+## 为什么要写
 
-## 逆向过程中最精妙的设计决策
+这个仓库有三个阅读难点：
 
-### 1. Agentic Loop 的自愈能力
+1. 它是反编译与重建工程，树上有很多“存在但默认不活跃”的能力
+2. 根级说明、docs 站总览页和当前代码之间存在若干漂移
+3. 真正值得理解的复杂度并不只在 `query.ts`，而在控制平面、扩展装配和恢复路径
 
-`src/query.ts` 实现的核心循环不是简单的"发请求→收响应"。它是一个**自愈的状态机**：
+如果没有一套“先分清哪些会跑，再分清为什么这样做”的材料，读者很容易：
 
-- API 返回错误（限流、token 超限）→ 自动重试/降级
-- 工具执行超时 → 后台化 + 通知机制
-- 对话过长触发 compaction → 压缩历史后无缝继续
-- 用户中断 → 生成 `UserInterruptionMessage` 让 AI 理解发生了什么
+- 把 feature-gated 分支当作当前产品说明
+- 把 REPL 路径和 headless 路径混为一谈
+- 高估某个模块的重要性，低估横切控制平面的难度
 
-这不是"if-else 堆叠"，而是让 AI 自己根据上下文决定下一步——即使发生了意外。
+## 逆向过程中最值得关注的设计决策
 
-### 2. 上下文工程的分层策略
+### 1. `feature() => false` 是阅读全局的第一原则
 
-AI 没有真正的"记忆"，Claude Code 通过精心分层营造了这个幻觉：
+`src/entrypoints/cli.tsx` 直接把 `feature()` polyfill 成恒 `false`。这不是小细节，而是决定“哪些代码只是产品方向线索，哪些才是 external build 活跃路径”的总开关。
 
-| 层 | 机制 | 持久性 |
-|----|------|--------|
-| **System Prompt** | 项目结构、git 状态、CLAUDE.md | 每轮重建 |
-| **对话历史** | 完整的 User/Assistant/Tool 消息 | 会话内 |
-| **Compaction** | 自动压缩过长对话为摘要 | 压缩后替代原始消息 |
-| **Memory 文件** | 跨会话持久化的笔记 | 永久（用户可控） |
-| **File History** | 文件修改时间戳快照 | 会话内 |
+### 2. interactive 和 headless 不是一个编排层
 
-`src/context.ts` 组装 System Prompt 时的策略是：**不变内容在前、变化内容在后**——这利用了 API 的缓存机制，前缀不变时可以复用缓存 token。
+很多类似产品会用一个统一 orchestrator 接住所有模式；这里不是。REPL 直连 `query()`，而 print/SDK 路径由 `QueryEngine.ts` 包装。这让很多“总览图”天然容易写错。
 
-### 3. 工具系统的权限双轨制
+### 3. 控制平面比主循环更容易决定维护成本
 
-`src/tools/BashTool/shouldUseSandbox.ts` 展示了一个精巧的双重安全模型：
+`AppState`、queue、sessionStorage、task framework、hooks 这些横切层，决定的是“这个系统能不能稳定跑很久”，而不只是“当前一轮会不会返回答案”。
 
-- **应用层**：权限规则决定"能不能执行"（白名单/黑名单/用户确认）
-- **OS 层**：沙箱决定"执行时能做什么"（文件系统/网络/进程隔离）
+### 4. Markdown workflow 被提升为一等执行能力
 
-两层的信任假设不同：应用层信任用户配置，OS 层不信任任何东西。即使 AI 绕过了应用层权限（理论上不可能，但纵深防御），OS 层沙箱仍然限制实际危害。
+skills 不是一堆附属文档，而是通过 frontmatter、fork/inline 执行、权限白名单和动态发现机制被真正接入主系统的能力面。
 
-### 4. Feature Flag 的全局开关
+### 5. 安全体系不是单层拦截，而是纵深拼装
 
-`src/entrypoints/cli.tsx` 中一行代码决定了整个系统的行为：
-
-```typescript
-const feature = (_name: string) => false;
-```
-
-所有 `feature('FLAG_NAME')` 调用返回 `false`——这意味着 Anthropic 内部的实验功能（COORDINATOR_MODE、KAIROS、PROACTIVE 等）全部禁用。在官方构建中，这些 flag 通过 Bun 的 `bun:bundle` 在编译时注入，不同用户群体看到不同功能。
-
-这是一个**渐进式发布架构**：同一个代码库，通过 feature flag 控制功能可见性，而不需要维护多个分支。
-
-### 5. Compaction 的分档策略
-
-`src/services/compact/` 实现了三种压缩策略：
-
-- **Micro-compact**：单次工具输出过长时，截断结果
-- **Auto-compact**：对话 token 接近上限时，自动压缩历史
-- **Reactive-compact**：API 返回 token 超限错误时，紧急压缩后重试
-
-这不是简单的"砍掉旧消息"——而是用 AI 自身来总结之前的对话，保留语义信息。压缩后插入一条 `TombstoneMessage` 标记边界。
+System Prompt 约束、权限规则、沙箱、Plan Mode、Hooks 和预算控制共同构成安全边界。单独看任何一层都会低估它的设计取舍。
 
 ## 阅读路线图
 
-推荐的阅读顺序，每章解决一个核心问题：
+推荐顺序不是按导航从头读到尾，而是先建立坐标系，再进入细节：
 
-```
-什么是 Claude Code (你在读的)          ← 建立直觉
-    │
-    ├── 架构全景                       ← 五层架构 + 数据流
-    │
-    ├── 安全体系                       ← 信任与控制
-    │   ├── 权限模型                   ← 应用层安全
-    │   ├── 沙箱机制                   ← OS 层安全
-    │   └── Plan Mode                  ← 用户主导模式
-    │
-    ├── 对话引擎                       ← AI 如何思考
-    │   ├── Agentic Loop               ← 核心循环
-    │   ├── 流式响应                   ← 实时通信
-    │   └── 多轮对话                   ← 上下文管理
-    │
-    ├── 上下文工程                     ← 记忆与预算
-    │   ├── System Prompt              ← 上下文组装
-    │   ├── Token 预算                 ← 预算管理
-    │   └── 项目记忆                   ← 跨会话持久化
-    │
-    ├── 工具系统                       ← AI 的双手
-    │   ├── 工具概览                   ← 统一接口
-    │   ├── Shell 执行                 ← Bash 工具
-    │   └── 搜索与导航                 ← Glob/Grep
-    │
-    └── Agent 与扩展                   ← 能力扩展
-        ├── 子 Agent                   ← 并行任务
-        ├── 自定义 Agent               ← 用户定义
-        └── MCP 协议                   ← 外部工具接入
-```
+1. [什么是 Claude Code](/docs/introduction/what-is-claude-code)
+2. [架构全景](/docs/introduction/architecture-overview)
+3. [运行时与构建](/docs/introduction/runtime-and-build)
+4. [交互与 Headless 分叉](/docs/introduction/interactive-vs-headless)
+5. [运行时与控制平面](/docs/runtime/app-state-control-plane)
+6. [Agentic Loop](/docs/conversation/the-loop)
+7. [工具系统](/docs/tools/what-are-tools)
+8. [安全与权限](/docs/safety/why-safety-matters)
+9. [扩展性](/docs/extensibility/command-system)
+10. [研究与内部机制](/docs/research/project-capability-atlas)
 
-## 适合谁读
+## 本站的写作边界
 
-- **AI Agent 开发者**：想理解生产级 agentic system 的架构模式
-- **安全工程师**：对 AI 操作真实环境时的信任模型感兴趣
-- **工具构建者**：正在构建类似的 coding assistant 或 CLI 工具
-- **好奇心驱动的开发者**：想知道"AI 编程助手到底怎么工作的"
+<Warning>
+凡是本仓库里无法直接落回源码的结论，都必须明确写成推断，而不是事实。
+</Warning>
+
+本站统一遵守这些边界：
+
+- 公开术语和产品名可以参考官方文档
+- 逆向结论必须落回当前仓库代码、分析稿或可验证的运行路径
+- feature-gated、ant-only、stubbed/removed 必须明确分开
+- 不把隐藏能力写成“今天就能用”
+
+## 场景变体
+
+| 读者 | 最应该看什么 |
+|---|---|
+| 维护者 | 热路径、控制平面、漂移矩阵 |
+| 逆向研究者 | 门禁体系、隐藏功能、扩展装配面 |
+| 深度用户 | 权限模型、Plan Mode、MCP、skills |
+
+## 先读什么
+
+1. [什么是 Claude Code](/docs/introduction/what-is-claude-code)
+2. [架构全景](/docs/introduction/architecture-overview)
+3. [阅读顺序与源码地图](/docs/introduction/reading-order-and-source-map)
+
+## 继续读什么
+
+<CardGroup cols={2}>
+  <Card title="文档漂移矩阵" icon="triangle-exclamation" href="/docs/research/docs-drift-matrix">
+    先看哪些文档说法和当前代码已经不一致。
+  </Card>
+  <Card title="能力图谱" icon="diagram-project" href="/docs/research/project-capability-atlas">
+    用一页总览热路径、扩展面和门禁矩阵。
+  </Card>
+</CardGroup>
+
+## 相关源码入口
+
+- `src/entrypoints/cli.tsx`
+- `src/main.tsx`
+- `build.ts`
+- `src/query.ts`
+- `src/state/AppStateStore.ts`
+
+## 本页证据等级
+
+- `external build active`: 文中对入口、构建、热路径的判断
+- `docs drift corrected`: 文中对站点定位和漂移问题的边界说明
+- `inference`: “源码白皮书”是面向当前仓库形态的写作立场，不是仓库内的显式术语

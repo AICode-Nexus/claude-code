@@ -194,3 +194,22 @@ Leader 通过 mailbox 收到通知
 | "修复 10 个独立的 lint 警告" | Swarm | 任务独立，可完全并行 |
 | "研究方案 A 和方案 B，然后选一个实现" | Coordinator | 先并行研究，再集中决策 |
 | "在大仓库中搜索所有 TODO 并分类" | Swarm | 无依赖，各自领任务即可 |
+
+## 先读什么
+
+1. [子 Agent 机制](/docs/agent/sub-agents)
+
+## 继续读什么
+
+- [任务系统 V2](/docs/agent/task-system-v2)
+- [Mailbox 与任务认领](/docs/agent/mailbox-and-claiming)
+
+## 相关源码入口
+
+- `src/utils/swarm/*`
+- `src/tasks/InProcessTeammateTask/*`
+
+## 本页证据等级
+
+- `feature-gated`: Coordinator Mode
+- `external build active`: 部分 swarm/task 基建

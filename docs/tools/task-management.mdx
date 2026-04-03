@@ -210,3 +210,21 @@ Plan Mode（计划模式）和任务系统是互补但独立的机制：
 4. AI 按 `blockedBy` 拓扑序逐项执行，每项用 TaskUpdate 标记进度
 
 `shouldDefer: true` 属性确保这些工具调用不会触发权限确认弹窗——任务管理操作始终自动批准，因为它们不产生副作用。
+
+## 先读什么
+
+1. [后台任务与 Housekeeping](/docs/runtime/background-tasks-and-housekeeping)
+
+## 继续读什么
+
+- [任务系统 V2](/docs/agent/task-system-v2)
+- [Mailbox 与任务认领](/docs/agent/mailbox-and-claiming)
+
+## 相关源码入口
+
+- `src/utils/tasks.js`
+- `src/utils/task/framework.ts`
+
+## 本页证据等级
+
+- `external build active`: TodoWrite 和 Tasks V2

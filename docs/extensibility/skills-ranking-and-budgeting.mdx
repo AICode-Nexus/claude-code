@@ -1,0 +1,199 @@
+---
+title: "Skills 排名与预算 - 为什么技能列表不会无限长"
+description: "把 skills 的“来源聚合、模型可见面预算、用户侧建议排序”拆开讲清：哪些能力真的会进 prompt，哪些只影响 `/` 补全，哪些在当前仓库里仍是 feature-gated。"
+keywords: ["skills ranking", "budgeting", "formatCommandsWithinBudget", "skillUsageTracking", "skill listing"]
+---
+
+## 一句话结论
+
+当前仓库里的 Skills 不是一条“统一排名链”，而是两条并行曝光链路：**模型侧**主要受来源聚合、过滤和字符预算控制，**用户侧**的 `/` 建议才会使用频率与时间衰减排序。
+
+## 状态标签总览
+
+| 主题 | 当前状态 | 关键入口 |
+|---|---|---|
+| 本地 / bundled / plugin skills 聚合 | `external build active` | `getSkillDirCommands()` / `getCommands()` |
+| 条件 skills 与动态发现 | `external build active` | `discoverSkillDirsForPaths()` / `addSkillDirectories()` |
+| 模型侧 skill listing 预算裁剪 | `external build active` | `formatCommandsWithinBudget()` |
+| `/` 建议排序与使用衰减 | `external build active` | `commandSuggestions.ts` / `skillUsageTracking.ts` |
+| MCP skills 注入 skill listing | `feature-gated` | `getMcpSkillCommands()` |
+| 远程 canonical skill 搜索 | `feature-gated`, `ant-only` | `SkillTool.ts` 中 `EXPERIMENTAL_SKILL_SEARCH` 分支 |
+
+## 为什么存在
+
+Skills 面临的是两个不同问题：
+
+1. 模型这一轮到底能“看见”哪些技能。
+2. 用户手动输入 `/` 时，界面应该把哪些技能先展示出来。
+
+如果把这两个问题混成一套统一排序器，就会同时踩中两个坑：
+
+- prompt 很快被大量低频技能说明撑爆；
+- UI 为了“最近常用”而调出的顺序，会被误写成“模型也按这个顺序接收技能”。
+
+当前实现把这两件事拆开，原因正是为了同时保住 **上下文预算** 和 **人类可发现性**。
+
+## 先纠正一个常见误读
+
+| 曝光面 | 真正入口 | 当前 external build 是否使用 usage score |
+|---|---|---|
+| 用户在 `/` 下看到的建议 | `generateCommandSuggestions()` | 是 |
+| 模型在 turn 中收到的 `skill_listing` | `getSkillToolCommands()` + `formatCommandsWithinBudget()` | 否 |
+
+这也是本页标题里“排名”最容易被误解的地方：当前仓库确实有 skill usage ranking，但它主要作用在 **slash command 建议层**，不是当前 external build 下的 prompt 注入排序器。
+
+## 正常链路
+
+```mermaid
+flowchart TD
+  subgraph model["模型侧技能面"]
+    sources["bundled / built-in plugin / user / project / managed / plugin / legacy commands"] --> load["getCommands()"]
+    dynamic["conditional & dynamic skills"] --> load
+    load --> filter["getSkillToolCommands() 过滤可调用 prompt skills"]
+    mcp["MCP skills"] --> mcpgate["getMcpSkillCommands()"]
+    mcpgate --> filter
+    filter --> budget["formatCommandsWithinBudget()"]
+    budget --> listing["skill_listing attachment"]
+  end
+
+  subgraph human["用户侧建议层"]
+    invoke["recordSkillUsage()"] --> score["getSkillUsageScore()"]
+    load --> suggest["generateCommandSuggestions()"]
+    score --> suggest
+    suggest --> slash["`/` 补全与最近使用排序"]
+  end
+```
+
+这张图最关键的一点，不是“有两条线”，而是 **两条线在中段就已经分叉**。从那之后，任何“最近使用”“指数衰减”“前五个最近技能”之类的叙述，都不能自动套到模型侧 listing 上。
+
+## 关键结构 / 状态
+
+| 结构 | 作用 | 这页真正该怎么理解 |
+|---|---|---|
+| `getSkillDirCommands()` | 聚合 managed / user / project / additional / legacy commands | 负责“从磁盘把技能读出来”，不是最后可见面 |
+| `getCommands()` | 把 bundled、built-in plugin、磁盘技能、plugin commands、dynamic skills 合并 | 决定大体顺序与来源并表 |
+| `getSkillToolCommands()` | 只保留 prompt 型、可被模型调用的 skills | 会过滤 `disableModelInvocation`、无描述 plugin/MCP 项 |
+| `formatCommandsWithinBudget()` | 按字符预算裁剪 listing | 预算来自上下文窗口的 1%，不是固定条数 |
+| `MAX_LISTING_DESC_CHARS` | 单条描述的硬上限 | 防止超长 `whenToUse` 提前吃掉缓存 |
+| `getSkillUsageScore()` | 以 7 天半衰期给技能算使用分 | 当前主要喂给 `/` 建议，不是 prompt listing |
+| `skillChangeDetector` | 监听技能目录变化并清缓存 | 解决“文件改了但命令列表还在 memoize” |
+| `addSkillDirectories()` / `activateConditionalSkillsForPaths()` | 动态发现与激活条件技能 | 让 skills 能随触碰文件路径而出现 |
+
+## 为什么不是更简单的设计
+
+最直觉的设计其实有三种，但都不够好：
+
+1. 把所有技能完整列给模型。
+2. 把同一套 usage ranking 同时用于 UI 和 prompt。
+3. 只保留 bundled skills，其余一律靠搜索或手动输入。
+
+它们分别会带来这些问题：
+
+- 第一种会直接把 system/context budget 打爆。
+- 第二种会把“用户最近用过”误当成“模型最应该先知道”。
+- 第三种会让项目级、本地级 skill 基本失去存在感。
+
+当前实现选择的是折中方案：**来源聚合尽量全，模型 listing 尽量短，用户补全再单独做最近使用排序。**
+
+## 一个实际例子
+
+假设当前项目里同时存在这些来源：
+
+- bundled skill：`pdf`
+- built-in plugin skill：`vercel:ai-sdk`
+- 用户目录 skill：`security-review`
+- 项目 `.claude/skills`：`sql-migration`
+- 旧式 `.claude/commands`：`review-pr`
+- 条件 skill：`ios-build`，带 `paths: ios/**`
+
+真实链路会是：
+
+1. 启动时，`getSkillDirCommands()` 先读 managed、user、project、additional 和 legacy commands，并按 `realpath()` 去重。
+2. 带 `paths` frontmatter 的 `ios-build` 不会立刻进入 unconditional skills，而是先进入 `conditionalSkills` 等待触发。
+3. 当会话第一次读写 `ios/AppDelegate.swift` 这类路径时，`activateConditionalSkillsForPaths()` 才把 `ios-build` 挂到 `dynamicSkills`。
+4. `getCommands()` 把 bundled、built-in plugin、磁盘技能、plugin commands、dynamic skills 合到一起。
+5. `getSkillToolCommands()` 只留下 prompt 型、可被模型调用、且满足描述约束的项。
+6. `attachments.ts` 生成 `skill_listing` 时，`formatCommandsWithinBudget()` 会优先保住 bundled skills 的完整描述，其余项再根据剩余预算截断，极端情况下只留名字。
+7. 如果用户此时敲 `/`，建议层还会额外参考 `recordSkillUsage()` 累积的数据，把最近常用技能顶到前面。
+
+这正是“来源聚合”“模型 listing”“用户建议”三层同时存在的意义。
+
+## 五条来源别混写
+
+| 来源 | 当前状态 | 进入 skill 面的方式 |
+|---|---|---|
+| bundled skills | `external build active` | `registerBundledSkill()` 注册后进入 `getBundledSkills()` |
+| built-in plugin skills | `external build active` | `getBuiltinPluginSkillCommands()` 生成 `source: 'bundled'` 的命令 |
+| user / project / managed / additional skills | `external build active` | `loadSkillsFromSkillsDir()` 读取 `SKILL.md` |
+| legacy `.claude/commands` | `external build active` | `loadSkillsFromCommandsDir()` 兼容旧命令目录 |
+| plugin skills | `external build active` | `loadPluginCommands.ts` 读取 plugin markdown |
+| conditional / dynamic skills | `external build active` | 先缓存，后按文件路径激活 |
+| MCP skills | `feature-gated` | `getMcpSkillCommands()` 在 gate 打开时才并入 listing |
+
+这里有两个很容易写错的点：
+
+- built-in plugin skills 在 `Command.source` 上被编码成 `bundled`，这是为了复用 SkillTool listing、分析埋点和“bundled 描述保留”逻辑，不代表它们就等于普通 built-in slash command。
+- MCP skills 虽然有专门入口，但在当前仓库 external build 下仍受 `feature('MCP_SKILLS')` 约束，不能写成“默认总会出现在 skill listing 里”。
+
+## 失败与恢复
+
+| 失败场景 | 现象 | 恢复思路 |
+|---|---|---|
+| 技能明明存在，但模型没看到 | 常见于 plugin/MCP skill 缺少显式描述，或 `disableModelInvocation=true` | 先查 `getSkillToolCommands()` 的过滤条件，而不是先怀疑加载失败 |
+| 同一 skill 从多个目录重复出现 | listing 重复或覆盖关系混乱 | 当前实现用 `realpath()` 做同文件去重，先看 dedupe 日志 |
+| 改了 `SKILL.md` 但列表没刷新 | memoize 仍返回旧结果 | `skillChangeDetector` 会清缓存；不触发时再查 watcher 或 `/reload` 类路径 |
+| 条件 skill 一直不出现 | 文件路径不匹配、路径在 cwd 外、或目录被 gitignored | 查 `activateConditionalSkillsForPaths()` 与 `discoverSkillDirsForPaths()` |
+| 技能太多撑爆 listing | 非 bundled 项描述被截断，极端时只剩名称 | 这是预算退化，不等于 skill 丢失 |
+| “最近常用”看着不对 | UI 顺序没按预期变化 | `recordSkillUsage()` 有 60 秒 debounce，且只在真实调用时累积 |
+
+## 边界与误读
+
+<Warning>
+在当前 external build 下，`getSkillUsageScore()` 不负责给模型侧 skill listing 做全局排序。它负责的是人类侧建议与补全体验。
+</Warning>
+
+- 描述被截断，不等于 skill 没加载；SkillTool 真正执行时仍会按需读取完整内容。
+- bundled skills 的“优先保留完整描述”只是 listing 预算策略，不代表调用时永远比别的 skill 更优先。
+- `getCommands()` 的合并顺序会影响模型最先看到哪些技能，但这不是“按热度重排”的排序器。
+- 插件技能基础设施当前仍在 external build 里活着，但生态能力面已经漂移，具体差异要回到 [插件状态与漂移](/docs/extensibility/plugin-status-and-drift) 那一页看。
+
+## 场景变体
+
+| 场景 | 这一页最该关心什么 |
+|---|---|
+| `--bare` 模式 | 只加载显式 `--add-dir`，不会做常规目录自动发现 |
+| plugin-only policy | 项目 / 用户 skills 可能被直接锁死，不能误判成“目录里没有” |
+| 超多本地 skills 的项目 | 预算退化更常见，描述截断会比排序更关键 |
+| 依赖条件 skill 的项目 | 重点看路径激活，而不是启动时是否加载 |
+| ant 内部实验构建 | 远程 canonical skill 搜索会额外出现，但不能回写为 external build 默认事实 |
+
+## 先读什么
+
+- 先读 [Skills 技能系统](/docs/extensibility/skills)
+- 再读 [命令系统](/docs/extensibility/command-system)
+
+## 继续读什么
+
+- [Hooks Recipes 与模式](/docs/extensibility/hooks-recipes-and-patterns)
+- [插件状态与漂移](/docs/extensibility/plugin-status-and-drift)
+- [Gating Matrix](/docs/internals/gating-matrix)
+- [Docs Drift Matrix](/docs/research/docs-drift-matrix)
+
+## 相关源码入口
+
+- `src/skills/loadSkillsDir.ts`
+- `src/commands.ts`
+- `src/tools/SkillTool/prompt.ts`
+- `src/utils/attachments.ts`
+- `src/utils/suggestions/skillUsageTracking.ts`
+- `src/utils/suggestions/commandSuggestions.ts`
+- `src/utils/skills/skillChangeDetector.ts`
+- `src/plugins/builtinPlugins.ts`
+- `src/utils/plugins/loadPluginCommands.ts`
+
+## 本页证据等级
+
+- `external build active`: `src/skills/loadSkillsDir.ts`, `src/commands.ts`, `src/tools/SkillTool/prompt.ts`, `src/utils/attachments.ts`, `src/utils/suggestions/skillUsageTracking.ts`, `src/utils/suggestions/commandSuggestions.ts`, `src/utils/skills/skillChangeDetector.ts`
+- `feature-gated`: `src/commands.ts` 中 `getMcpSkillCommands()` 相关 gate，`src/tools/SkillTool/SkillTool.ts` 中 `EXPERIMENTAL_SKILL_SEARCH`
+- `ant-only`: `src/tools/SkillTool/SkillTool.ts` 的 remote canonical skill 分支
+- `inference`: “当前 external build 把 ranking 与 prompt budget 明确拆成两层曝光面”是基于上述实现链路的结构性归纳

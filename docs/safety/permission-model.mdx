@@ -168,3 +168,20 @@ type PermissionUpdate =
 ```
 
 当用户在 Ask 对话框中选择 "Always allow"，系统调用 `persistPermissionUpdates()` 将规则写入对应层级的 settings 文件（project/user/managed），同时更新内存中的 `toolPermissionContext`。
+
+## 先读什么
+
+1. [AI 安全至关重要](/docs/safety/why-safety-matters)
+
+## 继续读什么
+
+- [权限规则手册](/docs/safety/permission-rule-cookbook)
+- [信任边界](/docs/safety/trust-boundaries)
+
+## 相关源码入口
+
+- `src/utils/permissions/*`
+
+## 本页证据等级
+
+- `external build active`: allow/ask/deny、rule sources、denial tracking

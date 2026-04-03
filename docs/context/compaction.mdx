@@ -1,12 +1,16 @@
 ---
 title: "上下文压缩 - Compaction 三层策略与边界机制"
-description: "深度解析 Claude Code 上下文压缩的完整实现：Session Memory 压缩、传统 API 摘要压缩、MicroCompact 局部压缩三层策略，以及 CompactBoundary 消息、工具对保持、PTL 紧急降级等关键机制。"
+description: "深度解析 Claude Code 上下文压缩的主要实现：传统 API 摘要压缩、MicroCompact 局部压缩，以及当前 reverse-engineered 仓库里哪些 PTL/Reactive 分支是真实可用，哪些只是门控或 stub。"
 keywords: ["上下文压缩", "Compaction", "token 管理", "对话压缩", "上下文窗口", "MicroCompact"]
 ---
 
 {/* 本章目标：从源码层面剖析压缩的三层策略、边界机制和关键常量 */}
 
 ## 压缩的触发时机
+
+<Warning>
+这页包含“设计中存在的压缩层”和“当前 reverse-engineered 仓库里真实活跃的压缩层”两部分。尤其是 `reactiveCompact`，在当前仓库里实现文件是 stub，不能当作 external build 的稳定能力。
+</Warning>
 
 上下文压缩不是单一操作，而是**三层递进**的策略系统，对应不同的触发条件和严重程度：
 
@@ -29,8 +33,10 @@ if (!customInstructions) {
   if (sessionMemoryResult) return sessionMemoryResult      // 优先：SM 压缩
 }
 
+// 当前 reverse-engineered 仓库里 reactiveCompact 实现为 stub，
+// 这里保留的是设计上的分支形状，不应直接视为 external active。
 if (reactiveCompact?.isReactiveOnlyMode()) {
-  return await compactViaReactive(messages, ...)            // 次选：Reactive 压缩
+  return await compactViaReactive(messages, ...)
 }
 
 // 兜底：传统 API 摘要
@@ -201,15 +207,14 @@ boundaryMarker.compactMetadata.preservedSegment = {
 
 这在会话恢复时帮助加载器正确重建消息链，避免重复压缩已保留的消息。
 
-## PTL 紧急降级：Prompt Too Long
+## PTL 边界：Prompt Too Long
 
-当压缩后仍然超出 token 限制（`PROMPT_TOO_LONG` 错误），系统会进入紧急降级路径：
+当压缩后仍然超出 token 限制时，query 状态机会进入更保守的 overflow 边界处理。需要区分两件事：
 
-1. **Reactive Compact**：`reactiveCompactOnPromptTooLong()` 尝试更激进的压缩
-2. **截断重试**：如果 reactive 也失败，`truncateHeadForPTLRetry()` 直接截断最早的消息
-3. 放弃并报错
+1. **设计上的恢复分支**：`query.ts` 里保留了 `reactiveCompact` 和 collapse drain 相关分支形状。
+2. **当前 reverse-engineered 仓库的真实实现**：`src/services/compact/reactiveCompact.ts` 是 stub，`contextCollapse` 又受 feature gate 控制，因此不应写成“当前 external build 一定会自动 reactive compact 并恢复成功”。
 
-Reactive Compact 目前在反编译版本中是 stub（`isReactiveOnlyMode() → false`），表明这是 Anthropic 内部的实验性功能。
+更保守的理解是：PTL 在当前仓库里首先是“上下文治理边界”，而不是一个已经完全打通的稳定恢复功能承诺。
 
 ## 压缩的 Hook 机制
 
@@ -237,3 +242,23 @@ snipCompactIfNeeded(messages, options?: { force?: boolean }) → {
 ```
 
 它似乎是一种**更细粒度的消息级裁剪**（snip = 剪切），可能是对单条消息的进一步压缩，而非整个对话。`shouldNudgeForSnips()` 和 `SNIP_NUDGE_TEXT` 暗示它可能会提示用户触发。
+
+## 先读什么
+
+1. [Token 预算](/docs/context/token-budget)
+
+## 继续读什么
+
+- [压缩边界与 PTL](/docs/context/compaction-boundaries-and-ptl)
+- [恢复与 Fallback](/docs/conversation/recovery-and-fallback)
+
+## 相关源码入口
+
+- `src/query.ts`
+- `src/services/compact/*`
+
+## 本页证据等级
+
+- `external build active`: `microCompact.ts`、`compact.ts`、主要 compact boundary 机制
+- `feature-gated`: Session Memory、Snip、部分 collapse 路径
+- `stubbed/removed`: `reactiveCompact.ts`

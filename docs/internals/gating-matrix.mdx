@@ -1,0 +1,155 @@
+---
+title: "Gating Matrix - 用一张表区分 active、feature-gated、ant-only 和 stub"
+description: "把这套仓库的几种“看得见但不一定能跑”的状态真正拆开：产品面标签、build/runtime/identity 门禁和底层依赖状态不能混成一句“这功能还在”。"
+keywords: ["gating matrix", "active", "feature-gated", "ant-only", "stub"]
+---
+
+## 一句话结论
+
+`external build active`、`feature-gated`、`ant-only`、`stubbed/removed` 不是同一条成熟度刻度，而是四种不同维度的判断结果；真正可用的门禁矩阵必须同时写清 **产品面标签** 和 **底层实现状态**。
+
+## 为什么这页必须单独存在
+
+很多文档漂移都不是因为“没找到代码”，而是因为找到了代码之后，把下面几件事混成了一句：
+
+- 这段代码有没有编进当前 external build。
+- 编进去了之后，还要不要过 GrowthBook、env、auth、policy。
+- 它是不是只在 `USER_TYPE === 'ant'` 的世界里成立。
+- 它依赖的底层包到底是实装、半实装，还是只剩 stub。
+
+如果这四问不拆开，最后就会出现两类典型错误：
+
+1. 把树上存在但外部默认走不到的路径写成“当前能力”。
+2. 把底层某个包是 stub，误写成整个能力面都被删除。
+
+## 状态标签图例
+
+| 标签 | 该怎么读 | 典型证据 |
+|---|---|---|
+| `external build active` | 当前 external build 的默认热路径会跑到 | `cli.tsx`、`main.tsx`、`query.ts`、`tools.ts` 的直连分支 |
+| `feature-gated` | 树上有实现，但当前 external build 默认被 `feature('...')` 或相关分支拦住 | `feature('KAIROS')`、`feature('VOICE_MODE')`、`feature('MCP_SKILLS')` |
+| `ant-only` | 主要由身份边界而不是实验开关决定 | `process.env.USER_TYPE === 'ant'`、ant overrides、undercover |
+| `stubbed/removed` | 至少当前仓库中的关键依赖只剩占位壳，不能按完整功能理解 | `packages/@ant/computer-use-mcp`, `packages/url-handler-napi` |
+
+## 总矩阵
+
+| 能力面 | build-time 门禁 | runtime 门禁 | identity 门禁 | 依赖实现状态 | 产品面正确标签 |
+|---|---|---|---|---|---|
+| REPL / print / `query()` 主链路 | 无关键 `feature()` 前置 | 常规 auth / config，但不是 dormant branch | 无 | `external build active` | `external build active` |
+| 基础 tools / commands / skills | 部分工具带 gate，但基线装配链路活跃 | 权限、模式、settings 继续裁剪 | 个别工具有 ant-only 分支 | `external build active` | `external build active` |
+| MCP skills 注入 listing | `feature('MCP_SKILLS')` | 几乎无额外 runtime gate | 无 | `external build active` | `feature-gated` |
+| Kairos / Coordinator / Buddy / Workflow | 大量 `feature('KAIROS')`、`feature('COORDINATOR_MODE')`、`feature('WORKFLOW_SCRIPTS')` | 往往还叠加 env / auth / GrowthBook | 某些邻接路径有 ant-only | `external build active` | `feature-gated` |
+| Voice mode | `feature('VOICE_MODE')` | `isVoiceGrowthBookEnabled()` 还会看 GrowthBook kill-switch 与 auth | 无 | native helper 为 `external build active` | `feature-gated` |
+| Undercover / ant overrides / ConfigTool / REPLTool | 一部分直接进树，一部分也会叠加 feature | 有些还会读 GrowthBook override | `USER_TYPE === 'ant'` 是主边界 | `external build active` | `ant-only` |
+| Computer Use / Chicago MCP 路径 | `feature('CHICAGO_MCP')` | 还要过平台、登录、非交互限制等条件 | 部分说明与工作流明显偏内部 | `packages/@ant/computer-use-mcp` 为 `stubbed/removed` | `feature-gated` |
+| Plugin 基础设施 | 无关键 build gate 阻断核心链路 | settings / enable state / policy 影响暴露面 | 无 | `external build active` | `external build active` |
+| Remote canonical skill search | `feature('EXPERIMENTAL_SKILL_SEARCH')` | 还要过模块内 feature check | 远程 canonical 分支是 ant 世界 | `external build active` | `feature-gated` + `ant-only` |
+| `@ant/*` / native helper 包本身 | 不适用 | 不适用 | 不适用 | 不是一个统一状态，必须逐包判断 | 看依赖状态，不直接等于产品面状态 |
+
+这张表里最关键的一列其实不是最后一列，而是 **“依赖实现状态”**。因为它直接阻止我们犯一个很常见的错误：把“某个底层包是 stub”扩大解释成“整个能力面都没了”。
+
+## 怎么读这张矩阵
+
+读到一个可疑能力时，按这五步判断，比只看一眼目录名可靠得多：
+
+1. 先看 `src/entrypoints/cli.tsx` 里的 external build 常量和 `feature() => false`。
+2. 再看调用点是否被 `feature('...')` 包住。
+3. 如果 build 层通过，再看 `GrowthBook`、env、auth、policy 是否还有第二层 runtime gate。
+4. 再确认是否要求 `USER_TYPE === 'ant'`。
+5. 最后回头看依赖包是不是实装、部分实装，还是纯 stub。
+
+只有前四步都走完，最后那句“当前站点应该怎么标状态”才有依据。
+
+## 常见误判
+
+| 误判 | 正确读法 |
+|---|---|
+| “代码里有 voice，说明语音是当前公开能力” | `VOICE_MODE` 先是 build gate，之后还有 GrowthBook / auth，正确标签是 `feature-gated` |
+| “某个包是 stub，所以整条产品线都没了” | 先区分产品面标签和依赖状态，例如 Chicago MCP 路径是 `feature-gated`，但某关键依赖是 `stubbed/removed` |
+| “ant-only 也是 feature-gated 的一种” | `ant-only` 的主语义是身份边界，不是实验开关 |
+| “AGENTS.md 说 NAPI 大多是 stub，那我可以直接照搬” | 当前仓库里 `audio-capture-napi`、`image-processor-napi`、`modifiers-napi` 并不是纯 stub，必须回代码确认 |
+
+## 一个实际例子：为什么 Voice 不能写成“当前可用”
+
+`voiceModeEnabled.ts` 很适合演示这个矩阵怎么用：
+
+1. 它先被 `feature('VOICE_MODE')` 卡住，所以在当前 external build 默认不是热路径。
+2. 即使假设 build 层放行，`isVoiceGrowthBookEnabled()` 还会再读 GrowthBook 的 kill-switch。
+3. 它并不是典型 ant-only 功能，因此主标签不该写成 `ant-only`。
+4. 底层 `audio-capture-napi` 并不是纯 stub，这只能说明“底层 helper 有活代码”，不能反推出“voice 已经是当前公开功能”。
+
+所以最稳妥的写法是：**voice 有明确代码证据和部分底层实现，但当前 external build 对外状态仍应标成 `feature-gated`。**
+
+## 一个实际例子：为什么 native 包也不能一概而论
+
+当前仓库里的 native / `@ant` 包至少分成三类：
+
+- `packages/@ant/computer-use-mcp`：文件头直接标了 “Stub 实现”，应读成 `stubbed/removed`。
+- `packages/url-handler-napi`：`waitForUrlEvent()` 直接返回 `null`，也应读成 `stubbed/removed`。
+- `packages/audio-capture-napi`、`packages/image-processor-napi`、`packages/modifiers-napi`：都有实际逻辑，不能粗暴写成 stub。
+
+这就是为什么“包状态”必须单列：它既可能纠正文档漂移，也不能替代产品面标签。
+
+## 场景变体
+
+| 读者 | 这张矩阵最有用的地方 |
+|---|---|
+| 维护者 | 决定先查 build gate、runtime gate，还是直接去看 stub 包 |
+| 文档作者 | 防止把 gated / ant-only / stub 写成“当前已上线能力” |
+| 逆向研究者 | 区分产品面判断和底层实现状态，不再把两者互相替代 |
+| 漂移修正文稿 | 把旧 AGENTS、旧分析稿里的笼统描述拆成可证据化标签 |
+
+## 失败与恢复
+
+| 失败场景 | 错误后果 | 恢复动作 |
+|---|---|---|
+| 只看 `feature('...')` 不看 runtime gate | 把“理论可编进构建”误写成“当前用户可用” | 回到 `growthbook.ts`、auth、policy 调用点补第二层 |
+| 只看 runtime gate 不看 `feature()` | 在根本没进当前 external build 的支路上做过度推断 | 先回 `cli.tsx`、`main.tsx`、`tools.ts` 看 DCE 边界 |
+| 看到 `USER_TYPE === 'ant'` 还写成公开实验功能 | 公开 / 内部边界被抹平 | 改回 `ant-only`，不要继续写“也许未来会开” |
+| 套用旧摘要说“除了 color-diff-napi 都是 stub” | 误伤当前已实现的 native helper | 逐包回看 `packages/*/src/index.ts` |
+
+## 边界与误读
+
+<Warning>
+“依赖是活的”不等于“产品面是活的”；“依赖是 stub”也不自动等于“整条能力面已经删除”。矩阵必须同时保留这两层。
+</Warning>
+
+- 不要把这页当成成熟度排行榜；它不是“越往下越不完整”。
+- 不要把 combined label 简化成一句“这个功能还在”。
+- 不要把 `external build active` 写成“对所有环境都无条件开放”；它只表示当前 external build 的默认热路径能到。
+- 不要把 `feature-gated` 和 `ant-only` 合并成同一个“隐藏功能池”。
+
+## 先读什么
+
+- 先读 [三层门禁系统](/docs/internals/three-tier-gating)
+- 再读 [Feature Flags](/docs/internals/feature-flags)
+
+## 继续读什么
+
+- [GrowthBook 运行时实验](/docs/internals/growthbook-ab-testing)
+- [Ant 特权世界](/docs/internals/ant-only-world)
+- [隐藏功能巡礼](/docs/internals/hidden-features)
+- [Docs Drift Matrix](/docs/research/docs-drift-matrix)
+
+## 相关源码入口
+
+- `src/entrypoints/cli.tsx`
+- `src/main.tsx`
+- `src/tools.ts`
+- `src/query.ts`
+- `src/services/analytics/growthbook.ts`
+- `src/voice/voiceModeEnabled.ts`
+- `src/commands.ts`
+- `packages/@ant/computer-use-mcp/src/index.ts`
+- `packages/audio-capture-napi/src/index.ts`
+- `packages/image-processor-napi/src/index.ts`
+- `packages/modifiers-napi/src/index.ts`
+- `packages/url-handler-napi/src/index.ts`
+
+## 本页证据等级
+
+- `external build active`: `src/entrypoints/cli.tsx`, `src/main.tsx`, `src/tools.ts`, `src/commands.ts`, `src/query.ts`, `src/services/analytics/growthbook.ts`
+- `feature-gated`: `src/main.tsx`, `src/tools.ts`, `src/query.ts`, `src/voice/voiceModeEnabled.ts`
+- `ant-only`: `src/tools.ts`, `src/services/analytics/growthbook.ts` 中的 ant override 分支，以及相关 `USER_TYPE === 'ant'` 判断
+- `stubbed/removed`: `packages/@ant/computer-use-mcp/src/index.ts`, `packages/url-handler-napi/src/index.ts`
+- `inference`: “矩阵必须把产品面标签和依赖实现状态分列，否则会系统性误判”是基于以上证据的结构性结论

@@ -178,3 +178,22 @@ Agent 工具（`AgentTool`）的 `isolation` 参数决定子 Agent 是否在 wor
 对于大型 monorepo，worktree 支持 `sparsePaths` 配置——只检出特定目录而非整个仓库。这在 210K 文件的仓库中将 worktree 创建时间从数十秒降到几秒。
 
 配置位于 `getInitialSettings().worktree?.sparsePaths`，在 `performPostCreationSetup()` 中应用。
+
+## 先读什么
+
+1. [子 Agent 机制](/docs/agent/sub-agents)
+
+## 继续读什么
+
+- [异步 Agent 生命周期](/docs/agent/async-agent-lifecycle)
+- [后台任务与 Housekeeping](/docs/runtime/background-tasks-and-housekeeping)
+
+## 相关源码入口
+
+- `src/utils/worktree.js`
+- `src/tools/EnterWorktreeTool/*`
+- `src/tools/ExitWorktreeTool/*`
+
+## 本页证据等级
+
+- `external build active`: worktree 隔离、状态持久化

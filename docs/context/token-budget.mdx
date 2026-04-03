@@ -166,3 +166,21 @@ const defaultTokens = isMaxTokensCapEnabled()
 `from` 方向保留 prompt cache（前缀不变），`up_to` 方向则破坏 cache（摘要插在保留内容之前）。
 
 两种方向的 PTL（prompt-too-long）重试策略相同：从最老的 API 轮次开始删除，确保至少保留一组消息供摘要。
+
+## 先读什么
+
+1. [System Prompt 动态组装](/docs/context/system-prompt)
+
+## 继续读什么
+
+- [压缩边界与 PTL](/docs/context/compaction-boundaries-and-ptl)
+- [工具结果预算](/docs/tools/tool-result-budgeting)
+
+## 相关源码入口
+
+- `src/query.ts`
+- `src/utils/context.js`
+
+## 本页证据等级
+
+- `external build active`: token 预算与输出 slot 优化

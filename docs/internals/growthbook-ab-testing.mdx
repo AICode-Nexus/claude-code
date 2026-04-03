@@ -1,120 +1,139 @@
 ---
-title: "GrowthBook A/B 测试体系 - 运行时功能发布"
-description: "揭秘 Claude Code 如何通过 GrowthBook 实现运行时 A/B 测试：用户定向、tengu 命名文化和渐进式功能发布策略。"
-keywords: ["GrowthBook", "A/B 测试", "运行时门控", "tengu", "渐进式发布"]
+title: "GrowthBook 运行时实验 - build 打开之后还要过的第二道门"
+description: "讲清 GrowthBook 在当前仓库里的位置：它不是替代 feature flags，而是在活跃代码之上继续做运行时实验、定向、缓存和用户分层。"
+keywords: ["GrowthBook", "runtime gating", "A/B testing", "experiments", "tengu"]
 ---
 
-{/* 本章目标：深入运行时 A/B 测试层——GrowthBook 的集成架构、用户定向、tengu 命名文化 */}
+## 一句话结论
 
-## 为什么需要运行时 A/B 测试
+GrowthBook 在当前仓库里不是第一层门，而是 **build-time feature 之后的第二层运行时决策器**：代码先得活着，它才有机会决定“当前会话要不要看到这条能力线”。
 
-构建时 `feature()` 是"全有或全无"的——要么所有用户都有，要么所有用户都没有。但产品团队需要更精细的控制：
+## 状态标签总览
 
-- 只对 5% 的用户灰度发布新功能
-- 按订阅类型（Free / Pro / Team）差异化体验
-- 对特定组织静默开启实验性能力
-- 随时远程关闭出问题的功能，无需发版
+| 主题 | 当前状态 | 说明 |
+|---|---|---|
+| GrowthBook 客户端与属性装配 | `external build active` | 不是空壳，当前仓库有真实初始化与刷新逻辑 |
+| 阻塞初始化读取 | `external build active` | `initializeGrowthBook()` / `getFeatureValue_DEPRECATED()` 仍存在 |
+| 非阻塞缓存读取 | `external build active` | `getFeatureValue_CACHED_MAY_BE_STALE()` 是 startup-critical 路径首选 |
+| ant 专用 override 能力 | `ant-only` | `CLAUDE_INTERNAL_FC_OVERRIDES`、config overrides 只对 ant 世界开放 |
+| feature gate 之外的 dormant branch 激活 | `feature-gated` 的前提之上 | GrowthBook 不能把 build 没带进来的代码“复活” |
 
-这就是 **GrowthBook** 的用武之地——一个运行时的、基于用户属性的功能门控和 A/B 测试系统。
+## 为什么存在
 
-## 集成架构
+如果所有能力判断都放在 `feature('...')` 里，会有两个问题：
 
-GrowthBook 的完整实现位于 `src/services/analytics/growthbook.ts`（1156 行），工作流程如下：
+1. build 一改就要重新发版，无法对同一份活跃代码做细粒度放量、回滚和分群。
+2. 某些启动关键路径需要“立刻给出一个值”，不能每次都阻塞在远程实验系统初始化上。
 
-<Steps>
-  <Step title="启动时获取远程配置">
-    CLI 启动时，GrowthBook SDK 通过 `https://api.anthropic.com/` 的 API 端点获取当前的功能配置和实验分组规则。使用 `remoteEval: true` 模式——在服务端计算分组，客户端只拿结果。
-  </Step>
-  <Step title="计算用户属性">
-    SDK 收集当前用户的属性（设备 ID、订阅类型、组织 UUID 等），用于决定该用户属于哪些实验的哪个分组。
-  </Step>
-  <Step title="缓存到本地">
-    计算结果缓存到 `~/.claude.json` 的 `cachedGrowthBookFeatures` 字段。刷新间隔：Anthropic 员工 20 分钟，外部用户 6 小时。
-  </Step>
-  <Step title="代码中查询 flag">
-    业务代码通过 `tengu_*` 前缀的 flag 名查询功能状态，GrowthBook SDK 返回当前用户的分组值。
-  </Step>
-</Steps>
+所以当前仓库把“代码是否在当前 build 存在”和“当前用户/组织/环境是否应当看到它”拆成了两层：
 
-## 用户定向属性
+- 第一层：`feature()` 决定这段代码是否属于当前 external build。
+- 第二层：GrowthBook 决定这段已经活着的代码，要不要对这次会话开放。
 
-GrowthBook 根据以下用户属性决定实验分组：
+## 正常链路
 
-| 属性 | 类型 | 来源 | 用途 |
-|------|------|------|------|
-| `id` | string | 会话 ID | 按会话粒度分组 |
-| `deviceID` | string | 持久化设备标识 | 跨会话一致性 |
-| `sessionId` | string | 当前会话 ID | 会话级实验 |
-| `platform` | enum | `process.platform` | 按操作系统差异化 |
-| `organizationUUID` | string | API 认证信息 | 按组织灰度 |
-| `accountUUID` | string | API 认证信息 | 按个人账户灰度 |
-| `subscriptionType` | string | API 认证信息 | Free / Pro / Team 差异化 |
-| `rateLimitTier` | string | API 认证信息 | 按速率限制层级 |
-| `email` | string | API 认证信息 | 精确定向特定用户 |
-| `appVersion` | string | `MACRO.VERSION` | 按版本号灰度 |
-| `github` | object | GitHub Actions 元数据 | CI 环境特殊处理 |
-
-<Note>
-这套定向系统意味着 Anthropic 可以做非常精细的实验——比如"只对 Mac 上的 Pro 订阅用户的 10% 开启新功能"。
-</Note>
-
-## 代号文化：tengu_* 的世界
-
-所有运行时 flag 都以 `tengu_` 为前缀——"Tengu"（天狗）是 Claude Code 的内部项目代号。flag 名采用**动物/植物/矿物 + 形容词**的命名约定，刻意保持不透明。
-
-<AccordionGroup>
-  <Accordion title="tengu_kairos — Kairos 助手模式">
-    控制 KAIROS 功能的运行时开关。即使构建时 `feature('KAIROS')` 通过，仍需此 flag 命中才能激活。双重门控确保新功能可以分阶段发布。
-  </Accordion>
-  <Accordion title="tengu_amber_stoat — Explore Agent A/B 测试">
-    控制内置的 Explore 子 Agent 的行为变体。"amber stoat"（琥珀色白鼬）是随机生成的代号，与功能内容无关——这是为了防止通过 flag 名猜测功能。
-  </Accordion>
-  <Accordion title="tengu_auto_background_agents — 后台 Agent 自动化">
-    控制是否自动将某些任务分派给后台 Agent 执行，而不是在前台阻塞用户。
-  </Accordion>
-  <Accordion title="tengu_onyx_plover — Auto-Dream 后台记忆">
-    控制"自动做梦"功能——在空闲时后台整理和巩固 Agent 的记忆。"onyx plover"（玛瑙鸻）又是一个不透明代号。
-  </Accordion>
-  <Accordion title="tengu_glacier_2xr — 工具搜索行为">
-    控制 Tool Search 的行为变体，可能是搜索算法或排序策略的 A/B 测试。
-  </Accordion>
-  <Accordion title="tengu_birch_trellis — Bash 权限策略">
-    控制 BashTool 权限判断的策略变体——可能在测试更宽松或更严格的权限规则。
-  </Accordion>
-  <Accordion title="tengu_scratch — 草稿本功能">
-    控制一个实验性的"草稿本"功能，可能是让 AI 在处理复杂任务时使用中间暂存区。
-  </Accordion>
-  <Accordion title="tengu_quartz_lantern — Diff 计算策略">
-    控制文件写入和编辑时的 diff 计算方式。可能在 A/B 测试不同的 diff 算法对用户体验的影响。
-  </Accordion>
-</AccordionGroup>
-
-## Ant-Only 覆盖机制
-
-Anthropic 员工拥有两种方式绕过 GrowthBook 的远程求值：
-
-### 环境变量覆盖
-
-```bash
-# 仅在 USER_TYPE=ant 的构建中生效
-CLAUDE_INTERNAL_FC_OVERRIDES='{"tengu_kairos": true}' claude
+```mermaid
+flowchart LR
+  build["feature() / active build"] --> attrs["getUserAttributes()"]
+  attrs --> init["initializeGrowthBook()"]
+  init --> payload["remote eval payload / disk cache"]
+  payload --> read["getFeatureValue_* / getDynamicConfig_*"]
+  read --> refresh["periodic refresh / refreshed.emit()"]
+  refresh --> surface["会话能力面更新"]
 ```
 
-通过 `CLAUDE_INTERNAL_FC_OVERRIDES` 环境变量传入 JSON 对象，直接覆盖任意 flag 的值。
+## 关键结构 / 状态
 
-### Config 界面覆盖
+| 结构 | 作用 | 关键点 |
+|---|---|---|
+| `isGrowthBookEnabled()` | 决定是否启用 GB | 依赖 1P event logging，不是无条件 always-on |
+| `initializeGrowthBook()` | 阻塞直到客户端 ready | 适合需要强一致值的路径，但会拖慢启动 |
+| `getFeatureValue_CACHED_MAY_BE_STALE()` | 立即从内存或磁盘缓存返回 | 当前仓库明确把它作为 startup-critical 默认读取方式 |
+| `remoteEvalFeatureValues` | 进程内权威值缓存 | refresh 后会重建，不只是磁盘缓存副本 |
+| `cachedGrowthBookFeatures` | 跨进程磁盘缓存 | 允许下一次启动即时读取，但可能陈旧 |
+| `onGrowthBookRefresh()` | 通知长期对象重建 | 用于那些把 gate 值烘焙进长寿命对象的系统 |
 
-在内部构建中，`/config` 命令的 Gates 标签页提供了图形化的 flag 管理界面，可以实时切换任意 GrowthBook flag。
+这里最容易被低估的一点是：GrowthBook 不是“只在网络请求完成后读一次值”。它同时维护：
 
-## 实验追踪
+- 阻塞初始化路径
+- 非阻塞缓存路径
+- 周期性轻刷新路径
+- auth 改变后的重建路径
 
-GrowthBook 集成了完整的实验曝光追踪：
+也就是说，它不仅是开关系统，还是 **一套“如何在长会话里保持 gate 新鲜度”的机制**。
 
-- 每次查询 flag 时记录实验曝光事件
-- 通过 protobuf 格式的 `GrowthbookExperimentEvent` 上报
-- 包含 `variation_id`（0=对照组，1+=实验组）和 `in_experiment` 标记
-- 数据用于分析功能对用户行为的因果影响
+## 一个端到端例子
 
-<Note>
-GrowthBook 正在从 Statsig 迁移而来——代码中仍保留着 `checkStatsigFeatureGate_CACHED_MAY_BE_STALE()` 这样的迁移兼容层。
-</Note>
+假设某个能力已经通过 build-time gate 进入当前 external build，但是否默认对用户开放还要看运行时条件：
+
+1. 启动早期代码走 `getFeatureValue_CACHED_MAY_BE_STALE()`，先从内存或磁盘里拿一个可能陈旧、但足够快的值。
+2. 随后 `initializeGrowthBook()` 完成，remote eval payload 填充 `remoteEvalFeatureValues`。
+3. 如果实验数据已经可用，先前累积在 `pendingExposures` 里的曝光记录会补记。
+4. 长会话里再通过 `setupPeriodicGrowthBookRefresh()` 做轻刷新，把新值同步到磁盘和订阅者。
+
+这条链的价值在于：**启动时不必全阻塞，运行中也不必永远相信旧缓存**。
+
+## 为什么不是更简单的设计
+
+一种更简单的方案是：每次都只在初始化时阻塞拉取远程实验值。
+
+当前仓库没有这么做，原因很实际：
+
+- 启动太早拉网络会拖慢 CLI 首屏。
+- trust 尚未建立时，不应该为了实验系统去提前触发 auth。
+- 有些长寿命系统需要在运行中感知 refresh，而不是直到下一次重启。
+
+所以它才会同时保留 `_BLOCKS_ON_INIT` 和 `_CACHED_MAY_BE_STALE` 两类 API。这不是命名冗余，而是对不同时延/一致性需求的显式分工。
+
+## 失败与恢复
+
+| 失败场景 | 当前表现 | 恢复方式 |
+|---|---|---|
+| trust 或 auth 未建立 | GB 上下文不完整，只能给默认值或缓存值 | 等 trust/auth 就绪后重建客户端 |
+| 磁盘缓存陈旧 | 启动早期读到过期实验值 | 初始化完成或 periodic refresh 后会纠正 |
+| 客户端创建时没有 auth，后来 auth 才可用 | 早期属性不完整 | `initializeGrowthBook()` 会检测并触发 reset / recreate |
+| 把 GB 当第一层 gate | 误以为 GB=true 就能让 dormant branch 活过来 | 先回到 `feature()` 判活，再谈 GB |
+| 长寿命对象烘焙了旧 gate 值 | 会话里行为不随 refresh 更新 | 通过 `onGrowthBookRefresh()` 订阅重建 |
+
+## 边界与误读
+
+<Warning>
+GrowthBook 无法“复活” build 没带进来的代码。它只能在已经活着的路径上继续做运行时决策。
+</Warning>
+
+- 不要把 GrowthBook 写成 feature flag 的替代物；它是后一层。
+- 不要把 `_CACHED_MAY_BE_STALE` 读法写成“不可靠的临时 hack”；这是当前仓库明确偏爱的启动路径。
+- 不要忽略 ant-only overrides；它们会影响你如何理解内部实验与公开世界的一致性。
+- 不要把“有 GB 代码”误写成“所有 gate 都依赖远程网络实时返回”。
+
+## 场景变体
+
+| 场景 | GrowthBook 的角色 |
+|---|---|
+| 启动关键路径 | 立即给缓存值，避免阻塞 |
+| 鉴权后长期会话 | 周期刷新、订阅更新、逐步变新 |
+| ant 内部调试 | env/config override 可直接改 gate 结果 |
+| external build 事实判断 | 仍必须先看 build-time gate |
+
+## 先读什么
+
+- 先读 [三层门禁系统](/docs/internals/three-tier-gating)
+- 再读 [Feature Flags](/docs/internals/feature-flags)
+
+## 继续读什么
+
+- [Gating Matrix](/docs/internals/gating-matrix)
+- [Ant 特权世界](/docs/internals/ant-only-world)
+- [隐藏功能巡礼](/docs/internals/hidden-features)
+
+## 相关源码入口
+
+- `src/services/analytics/growthbook.ts`
+- `src/main.tsx`
+- `src/entrypoints/cli.tsx`
+
+## 本页证据等级
+
+- `external build active`: [src/services/analytics/growthbook.ts](/Users/admin/work/claude-code-docs-sweep/src/services/analytics/growthbook.ts), [src/main.tsx](/Users/admin/work/claude-code-docs-sweep/src/main.tsx)
+- `ant-only`: ant 环境下的 GrowthBook override 入口
+- `inference`: “为什么同时保留阻塞初始化和缓存即读两套接口”是对当前实现约束的结构总结

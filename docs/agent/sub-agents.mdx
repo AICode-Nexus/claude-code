@@ -192,3 +192,22 @@ const POLL_INTERVAL_MS = 500   // 每 500ms 轮询
     `run_in_background: true` 启动长时间构建/测试任务，主 Agent 继续工作
   </Card>
 </CardGroup>
+
+## 先读什么
+
+1. [任务系统 V2](/docs/agent/task-system-v2)
+
+## 继续读什么
+
+- [Mailbox 与任务认领](/docs/agent/mailbox-and-claiming)
+- [异步 Agent 生命周期](/docs/agent/async-agent-lifecycle)
+
+## 相关源码入口
+
+- `src/tools/AgentTool/*`
+- `src/tasks/*`
+- `src/utils/forkedAgent.js`
+
+## 本页证据等级
+
+- `external build active`: 子 Agent、fork、background task

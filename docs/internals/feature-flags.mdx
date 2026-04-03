@@ -1,115 +1,128 @@
 ---
-title: "88 个 Feature Flags - 构建时特性门控全解"
-description: "深入剖析 Claude Code 的 88+ 个构建时 feature flags：bun:bundle 编译时门控机制，揭示被编译器删除的隐藏功能模块。"
-keywords: ["feature flags", "特性标志", "构建时门控", "bun:bundle", "条件编译"]
+title: "Feature Flags - 代码树里有什么不等于 external build 会执行什么"
+description: "解释 feature flags 在当前仓库里的真正含义：它们是产品方向和内部能力的证据，但在 external build 中大量分支默认不会激活。"
+keywords: ["feature flags", "feature()", "external build", "gated code"]
 ---
 
-{/* 本章目标：完整梳理构建时 feature flag 系统的机制和所有 flag 的分类 */}
+## 一句话结论
 
-## feature() 是什么
+在这个仓库里，feature flags 的首要意义不是“线上灰度开关”，而是 **划出 external build 的边界**：它告诉你哪些代码可以研究，哪些代码可以运行，以及哪些代码只能当成方向线索。
 
-Claude Code 使用 Bun 打包器的 `bun:bundle` 模块提供编译时特性门控：
+## 状态标签总览
 
-```typescript
-// 源码中的用法（src/tools.ts 等）
-import { feature } from 'bun:bundle'
+| 类别 | 典型例子 | 当前状态 |
+|---|---|---|
+| orchestration / assistant | `COORDINATOR_MODE`, `KAIROS`, `PROACTIVE` | 多数 `feature-gated` |
+| tool / capability | `WEB_BROWSER_TOOL`, `CONTEXT_COLLAPSE`, `HISTORY_SNIP` | 多数 `feature-gated` |
+| platform / remote | `BRIDGE_MODE`, `DAEMON`, `SSH_REMOTE`, `DIRECT_CONNECT` | 多数 `feature-gated` |
+| diagnostics / internal helpers | `OVERFLOW_TEST_TOOL`, `TRANSCRIPT_CLASSIFIER` 等 | 混合，很多仍不应当成公开默认能力 |
 
-const SleepTool = feature('PROACTIVE') || feature('KAIROS')
-  ? require('./tools/SleepTool/SleepTool.js').SleepTool
-  : null
+## 为什么重要
+
+如果忽略 feature flags，reverse-engineered 文档会系统性高估三个方向：
+
+1. 协调器、多 agent、Kairos 这类编排世界的成熟度。
+2. 浏览器、voice、assistant 这类体验分支的公开可用度。
+3. bridge、daemon、remote-control 这类平台化能力在 external build 的现实状态。
+
+`feature('...')` 在当前仓库里承担的，不只是“以后也许能开”的作用，更像是：
+
+- 把内部分支挡在 external build 之外；
+- 给恢复工程保留结构证据；
+- 帮你建立“树上有”与“当前活”的区别。
+
+## 正常链路
+
+```mermaid
+flowchart LR
+  source["源码里的 feature('X')"] --> build["构建期是否进入当前 build"]
+  build --> alive{"当前 external build 活着吗"}
+  alive -->|no| evidence["证据 / 方向 / dormant branch"]
+  alive -->|yes| runtime["仍要再过 runtime gate / env / policy"]
+  runtime --> surface["最终能力面"]
 ```
 
-在 Anthropic 的内部构建中，`feature()` 在打包时被求值——返回 `true` 的代码会被保留，返回 `false` 的代码会被 **Dead Code Elimination (DCE)** 彻底移除。
+## 关键结构 / 状态
 
-在我们的反编译版本中，这个函数被兜底为：
+| 源码入口 | 说明 | 你该怎么使用它 |
+|---|---|---|
+| `src/entrypoints/cli.tsx` | 入口层把 external build 读法固定下来 | 用来确定当前文档是否应该把某条路径写成活跃能力 |
+| `src/main.tsx` | 大量 `feature('...')` 分支的汇流点 | 看各种远程、assistant、bridge、daemon、Kairos 路径是否可能被调用 |
+| `src/tools.ts` | feature-gated tool 最集中 | 判断“树上有工具”与“本轮可调用工具”之间的距离 |
+| 具体功能目录 | 例如 assistant、bridge、workflow、browser tool | 作为研究材料，但不能自动上升成产品结论 |
 
-```typescript
-// src/entrypoints/cli.tsx 第 3 行
-const feature = (_name: string) => false;
-```
+## 一个实际例子
 
-这意味着所有 88+ 个 feature flag 后的代码**在运行时永远不会执行**，但代码本身完整保留，可以阅读和分析。
+以 `BRIDGE_MODE` 为例：
 
-## Flags 分类全景
+1. 代码树里确实有 bridge 相关模块，说明这不是纯粹的想象功能。
+2. 但是否进入当前 external build，要先经过 `feature('BRIDGE_MODE')`。
+3. 即便构建层允许，还要看 auth、policy limit、最小版本检查等运行时条件。
+4. 所以正确写法应该是：**bridge 是树上明确存在、但受多层 gate 约束的能力**，而不是“当前默认可用的远程控制能力”。
 
-<CardGroup cols={2}>
-  <Card title="Agent / 自动化" icon="robot">
-    **15 个 flags** — 控制 AI 的自主能力边界
+这个例子能很好说明：feature flag 只是第一层，不是唯一层；但第一层没过，就更不能往下写成现实能力。
 
-    `KAIROS` · `KAIROS_BRIEF` · `KAIROS_CHANNELS` · `KAIROS_DREAM` · `KAIROS_GITHUB_WEBHOOKS` · `KAIROS_PUSH_NOTIFICATION` · `PROACTIVE` · `COORDINATOR_MODE` · `FORK_SUBAGENT` · `AGENT_MEMORY_SNAPSHOT` · `AGENT_TRIGGERS` · `AGENT_TRIGGERS_REMOTE` · `VERIFICATION_AGENT` · `BUILTIN_EXPLORE_PLAN_AGENTS` · `MONITOR_TOOL`
-  </Card>
+## 为什么不是更简单的设计
 
-  <Card title="基础设施" icon="server">
-    **10 个 flags** — 控制运行环境和连接方式
+把 feature flags 理解成传统 SaaS 灰度开关会有一个问题：那种理解默认这些代码都已经是同一个公开产品面的组成部分，只是当前用户看不见。
 
-    `DAEMON` · `BG_SESSIONS` · `BRIDGE_MODE` · `CCR_AUTO_CONNECT` · `CCR_MIRROR` · `CCR_REMOTE_SETUP` · `DIRECT_CONNECT` · `SSH_REMOTE` · `SELF_HOSTED_RUNNER` · `BYOC_ENVIRONMENT_RUNNER`
-  </Card>
+而当前仓库并不是这样。很多 flag 背后同时夹带着：
 
-  <Card title="安全 / 分类" icon="shield-halved">
-    **6 个 flags** — 增强权限判断的智能性
+- external 与 internal build 的边界；
+- reverse-engineered 仓库尚未完全恢复的支路；
+- 只在特定身份世界里才成立的内部产品面。
 
-    `TRANSCRIPT_CLASSIFIER` · `BASH_CLASSIFIER` · `TREE_SITTER_BASH` · `TREE_SITTER_BASH_SHADOW` · `NATIVE_CLIENT_ATTESTATION` · `ABLATION_BASELINE`
-  </Card>
+因此对这棵树来说，feature flag 更像 **“先别把这里写成现实” 的结构提示**。
 
-  <Card title="工具 / 能力" icon="toolbox">
-    **10 个 flags** — 新增的 AI 能力
+## 失败与恢复
 
-    `WEB_BROWSER_TOOL` · `TERMINAL_PANEL` · `CONTEXT_COLLAPSE` · `HISTORY_SNIP` · `OVERFLOW_TEST_TOOL` · `WORKFLOW_SCRIPTS` · `VOICE_MODE` · `MCP_RICH_OUTPUT` · `MCP_SKILLS` · `UDS_INBOX`
-  </Card>
+| 失败方式 | 会造成什么 | 恢复方式 |
+|---|---|---|
+| 看到实现目录就直接写成功能页 | 产出一篇很丰富但大量漂移的文档 | 先查 `feature('...')` 是否让它进入 external build |
+| 把 feature flag 当唯一 gate | 漏掉 runtime 与身份层限制 | 回到三层门禁图补齐 |
+| 把 dormant branch 当死代码 | 错过真实产品方向线索 | 标注为 `feature-gated`，而不是删掉讨论 |
+| 把 flag 的存在写成“当前可用” | 误导维护与排障顺序 | 改成“证据存在，但当前不应宣称为 live capability” |
 
-  <Card title="UI / 体验" icon="palette">
-    **8 个 flags** — 界面和交互改进
+## 边界与误读
 
-    `MESSAGE_ACTIONS` · `QUICK_SEARCH` · `HISTORY_PICKER` · `AUTO_THEME` · `STREAMLINED_OUTPUT` · `COMPACTION_REMINDERS` · `TEMPLATES` · `BUDDY`
-  </Card>
+<Warning>
+“代码存在”只能证明设计方向或结构证据，不足以证明当前 external build 会执行这段代码。
+</Warning>
 
-  <Card title="平台 / 实验" icon="flask-vial">
-    **10+ 个 flags** — 实验性和平台级功能
+- 不要把 `feature('...')` 看成单纯的运行时开关。
+- 不要把 feature-gated 写成 ant-only，也不要反过来写。
+- 不要因为某功能目录很完整，就自动推断它是当前活跃路径。
+- 不要把 dormant branch 直接扔掉；它对逆向和漂移分析仍然有价值。
 
-    `DUMP_SYSTEM_PROMPT` · `UPLOAD_USER_SETTINGS` · `DOWNLOAD_USER_SETTINGS` · `EXPERIMENTAL_SKILL_SEARCH` · `ULTRAPLAN` · `ULTRATHINK` · `TORCH` · `LODESTONE` · `PERFETTO_TRACING` · `SLOW_OPERATION_LOGGING` · `HARD_FAIL` · `ALLOW_TEST_VERSIONS`
-  </Card>
-</CardGroup>
+## 场景变体
 
-## 代码中的典型模式
+| 场景 | feature flag 更像什么 |
+|---|---|
+| external build 阅读 | 活跃路径过滤器 |
+| 产品方向研究 | 结构证据与未来线索 |
+| 内部构建世界 | 真正的能力开关之一 |
+| 文档审校 | 防止把 dormant branch 写成 live feature |
 
-Feature flags 在代码中主要有三种使用模式：
+## 先读什么
 
-### 模式一：条件加载工具
+- 先读 [三层门禁系统](/docs/internals/three-tier-gating)
+- 再读 [Gating Matrix](/docs/internals/gating-matrix)
 
-```typescript
-// src/tools.ts — 最常见的模式
-const MonitorTool = feature('MONITOR_TOOL')
-  ? require('./tools/MonitorTool/MonitorTool.js').MonitorTool
-  : null
-```
+## 继续读什么
 
-当 flag 为 `false` 时，`require()` 调用被 DCE 移除，工具不会出现在可用工具列表中。
+- [隐藏功能巡礼](/docs/internals/hidden-features)
+- [Ant 特权世界](/docs/internals/ant-only-world)
+- [文档漂移矩阵](/docs/research/docs-drift-matrix)
 
-### 模式二：条件注册命令
+## 相关源码入口
 
-```typescript
-// src/commands.ts — 注册斜杠命令
-if (feature('VOICE_MODE')) {
-  commands.push({ name: 'voice', description: '...' })
-}
-```
+- `src/entrypoints/cli.tsx`
+- `src/main.tsx`
+- `src/tools.ts`
+- `src/services/analytics/growthbook.ts`
+- `src/*` 中所有 `feature('...')` 调用点
 
-### 模式三：条件启用 API 特性
+## 本页证据等级
 
-```typescript
-// src/constants/betas.ts — 控制发送给 API 的 beta header
-export const AFK_MODE_BETA_HEADER = feature('TRANSCRIPT_CLASSIFIER')
-  ? 'afk-mode-2026-01-31'
-  : ''
-```
-
-<Note>
-由于 `feature()` 在构建时求值，被 DCE 移除的代码不会增加最终打包体积。但在反编译版本中，这些代码全部保留——这正是我们能够进行完整分析的原因。
-</Note>
-
-## 有趣的发现
-
-- **KAIROS 家族**最庞大——6 个相关 flag 控制从核心功能到推送通知的方方面面
-- **ABLATION_BASELINE** 是用于"科学对照实验"的——它会关闭 thinking、compaction、auto-memory 等高级功能，测量裸 API 调用的基线性能
-- **BUDDY** 是一个 AI 吉祥物/精灵系统——在 `src/buddy/` 目录下有完整实现
-- **ULTRAPLAN** 和 **ULTRATHINK** 暗示着比当前 extended thinking 更高级的推理模式
+- `feature-gated`: [src/entrypoints/cli.tsx](/Users/admin/work/claude-code-docs-sweep/src/entrypoints/cli.tsx), [src/main.tsx](/Users/admin/work/claude-code-docs-sweep/src/main.tsx), [src/tools.ts](/Users/admin/work/claude-code-docs-sweep/src/tools.ts)
+- `inference`: “feature flags 在这里更像 external build 边界而非普通灰度开关”是对当前仓库结构的解释性总结

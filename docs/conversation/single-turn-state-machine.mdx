@@ -1,0 +1,150 @@
+---
+title: "单轮状态机 - 一次 query() 迭代里到底发生了什么"
+description: "拆开一次单轮 query() 迭代：预处理、流式调用、tool_use 收集、工具执行、继续或终止，让 Agentic Loop 的最小单位可视化。"
+keywords: ["single turn", "state machine", "query.ts", "tool_use", "pre-processing"]
+---
+
+## 一句话结论
+
+`query.ts` 的真正复杂度不在“会循环很多轮”，而在“单轮本身就已经是一台带恢复分支、工具并发和状态回写的状态机”。
+
+## 实现状态
+
+| 组成 | 状态标签 | 当前含义 |
+|---|---|---|
+| 单轮预处理、流式调用、工具继续判定 | `external build active` | 当前 external build 的主循环 |
+| `max_output_tokens` 升级与续写恢复 | `external build active` | 当前 `query.ts` 明确实现 |
+| stop hook 阻塞后继续重跑 | `external build active` | 当前 external build 真实路径 |
+| `contextCollapse` 相关恢复 | `feature-gated` | 代码路径存在，但当前默认构建不活跃 |
+| `reactiveCompact` 恢复 | `stubbed/removed` | `query.ts` 里有状态位，仓库里的实现文件是 stub |
+
+## 为什么存在
+
+只要模型要在真实工具结果的基础上继续决策，一次 turn 就必须同时容纳：
+
+- 上下文预处理
+- 流式文本与 `tool_use` 混合到达
+- 工具执行
+- 中断、错误、恢复和继续判定
+
+## 正常链路
+
+```mermaid
+flowchart TD
+  pre["预算与上下文预处理"] --> call["deps.callModel()"]
+  call --> stream["收集 assistant / tool_use / progress"]
+  stream --> recover{"有 recoverable error?"}
+  recover -->|yes| mutate["修改 State 后 continue"]
+  recover -->|no| decide{"needsFollowUp?"}
+  decide -->|yes| run["run tools / 收 tool_result"]
+  run --> next["拼回 messages, transition=next_turn"]
+  decide -->|no| hooks["stop hooks / token budget / completed"]
+```
+
+## 关键结构 / 状态
+
+`query.ts` 顶部定义的 `State` 本身就暴露了这台状态机真正关心什么：
+
+| 字段 | 作用 |
+|---|---|
+| `messages` | 下一次 API 调用真正看到的消息面 |
+| `toolUseContext` | 工具池、权限、AppState、缓存与 abort controller 的总入口 |
+| `autoCompactTracking` | 记录本轮是否触发过 autocompact 以及失败计数 |
+| `maxOutputTokensRecoveryCount` | 控制续写恢复的尝试次数 |
+| `hasAttemptedReactiveCompact` | 保护“同一轮是否已经走过 reactive compact 分支” |
+| `maxOutputTokensOverride` | 8k -> 64k 的 slot 升级重试 |
+| `pendingToolUseSummary` | 把工具摘要消息延后到正确时机输出 |
+| `stopHookActive` | 标记当前是不是 stop hook 驱动的继续 |
+| `turnCount` | 当前 agentic loop 已跑到第几轮 |
+| `transition` | 记录上一轮为何继续，便于测试和恢复观测 |
+
+一个容易被忽略的点是：这台状态机不只记“数据”，还记上一轮为什么继续。这让系统能区分“正常下一轮”“max tokens 恢复轮”“stop hook 阻塞轮”“token budget nudged continuation”。
+
+## 正常链路拆解
+
+在一次正常单轮里，顺序大致是：
+
+1. 从 `messages` 中取出 compact boundary 之后的可见历史。
+2. 先执行 `applyToolResultBudget()`，再跑 `microcompact()`，再视情况做 `autocompact()`。
+3. 建立 `needsFollowUp = false`、`assistantMessages = []`、`toolResults = []` 等本轮暂存。
+4. 调 `deps.callModel()` 进入 stream。
+5. 一边收 assistant content，一边把 `tool_use` 交给 `StreamingToolExecutor`。
+6. 如果 `needsFollowUp === false`，进入 stop hook / token budget / completed 路径。
+7. 如果 `needsFollowUp === true`，拼回 `messages + assistantMessages + toolResults`，把 `transition` 写成 `next_turn`，继续下一轮。
+
+也就是说，“单轮”并不等于“一次完整 API 往返后直接结束”，而是一次从预处理到继续判定的闭环。
+
+## 一个端到端例子
+
+假设模型在这一轮里输出：
+
+1. 一段分析文本
+2. 一个 `tool_use(Read)` 读文件
+3. 一个 `tool_use(Edit)` 改文件
+
+那么 `query.ts` 会：
+
+- 在流里发现 `tool_use`，把 `needsFollowUp` 置为 `true`
+- 尝试让 `StreamingToolExecutor` 尽早开始跑工具
+- 收到 `tool_result` 后把它们塞入 `toolResults`
+- 本轮不返回 `completed`，而是构造下一轮 state
+- 下一轮再把“刚才的工具结果”当作模型新的观察输入
+
+这就是 Agentic Loop 最小可工作的单元。
+
+## 失败与恢复
+
+最常见的单轮分支，其实不是工具报错，而是“本轮本身需要被改写后继续”：
+
+| 分支 | 什么时候触发 | `transition.reason` 代表什么 |
+|---|---|---|
+| `max_output_tokens_escalate` | 8k 输出槽不够，先升级到 64k 再试一次 | 同一请求参数升级 |
+| `max_output_tokens_recovery` | 升级还不够，注入“继续完成上一回答”的 meta message | 多轮续写恢复 |
+| `stop_hook_blocking` | stop hook 认为回答策略不合格 | 追加阻塞消息后再思考 |
+| `token_budget_continuation` | token budget 认为还能继续但需要 nudging | 注入提醒消息后继续 |
+| `next_turn` | 正常 tool follow-up | 不是错误恢复，而是普通 agentic 继续 |
+
+在当前仓库里，有两类分支要特别保守：
+
+- `collapse_drain_retry`：依赖 `feature('CONTEXT_COLLAPSE')`
+- `reactive_compact_retry`：`query.ts` 有逻辑，但 `src/services/compact/reactiveCompact.ts` 当前是 stub
+
+因此，阅读源码时可以把它们当作“存在于状态机设计里的分支”，但写文档时不能直接描述成当前 external build 一定会跑到的常规恢复路径。
+
+## 边界与误读
+
+- 单轮不等于一次 API 请求，因为中途可能因为恢复逻辑再次 call model。
+- `needsFollowUp = false` 才表示这一轮真的有机会结束。
+- 工具并发不发生在“轮与轮之间”，而是已经嵌进单轮内部。
+- `transition` 不是日志摆设，而是状态机显式记录“为什么继续”。
+- 看到 `hasAttemptedReactiveCompact` 字段，不等于当前仓库真有 live reactive compact 实现。
+
+## 场景变体
+
+| 场景 | 单轮里最关键的分支 |
+|---|---|
+| 普通问答 | `needsFollowUp = false`，直接 completed |
+| 工具驱动任务 | `needsFollowUp = true`，转入下一轮 |
+| 长回答被截断 | `max_output_tokens_escalate` 或 `max_output_tokens_recovery` |
+| 输出策略被 hook 拦截 | `stop_hook_blocking` |
+| 大上下文压力 | 预算/compact 预处理先改写消息面，再决定是否继续 |
+
+## 继续读什么
+
+- [Agentic Loop](/docs/conversation/the-loop)
+- [恢复与 fallback](/docs/conversation/recovery-and-fallback)
+- [流事件与 watchdog](/docs/conversation/stream-events-and-watchdog)
+- [压缩边界与 PTL](/docs/context/compaction-boundaries-and-ptl)
+
+## 相关源码入口
+
+- `src/query.ts`
+- `src/services/api/claude.ts`
+- `src/services/tools/StreamingToolExecutor.ts`
+- `src/utils/toolResultStorage.ts`
+
+## 本页证据等级
+
+- `external build active`: 单轮预处理、stream 收集、tool follow-up、max output 恢复、stop hook 阻塞
+- `feature-gated`: `contextCollapse` 相关恢复路径
+- `stubbed/removed`: `reactiveCompact` 的当前仓库实现

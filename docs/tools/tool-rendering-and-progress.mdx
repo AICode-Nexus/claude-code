@@ -1,0 +1,118 @@
+---
+title: "工具渲染与进度 - 终端里看到的不是日志拼接，而是协议化 UI"
+description: "解释 renderToolUseMessage、renderToolResultMessage、onProgress、activity description 和折叠显示模式，说明为什么工具结果在终端里看起来像有状态的组件而不是纯文本日志。"
+keywords: ["tool rendering", "progress", "renderToolResultMessage", "onProgress", "UI"]
+---
+
+## 一句话结论
+
+Claude Code 的工具系统不只定义“怎么执行”，还定义“怎么显示执行中”和“怎么显示执行后”；终端里看到的是一套协议化 UI，而不是命令输出被随手 `console.log` 到屏幕上。
+
+## 实现状态
+
+| 组成 | 状态标签 | 当前含义 |
+|---|---|---|
+| `renderToolUseMessage` / `renderToolResultMessage` / `renderToolUseProgressMessage` | `external build active` | 当前工具 UI 的核心协议 |
+| `onProgress -> createProgressMessage` 链路 | `external build active` | 当前工具执行和 REPL 渲染真实依赖 |
+| 搜索/读取折叠与活动描述 | `external build active` | 当前 external build 已实现 |
+| 某些 ant-only 分类器附加提示 | `ant-only` | 同一 UI 流里可见，但不是公开构建默认事实 |
+
+## 为什么存在
+
+如果工具执行只是“后台跑完再打印一坨文本”，用户在长命令、子 agent 或搜索任务里会立刻失去上下文。Claude Code 需要持续回答三个问题：
+
+- 现在到底在跑什么
+- 有没有新进展
+- 最终结果该如何展示得可读
+
+所以 Tool 抽象天然分成两面：
+
+- 执行协议：`call()`、`checkPermissions()`、`mapToolResultToToolResultBlockParam()`
+- 展示协议：`renderToolUseMessage()`、`renderToolResultMessage()`、`renderToolUseProgressMessage()`、`getActivityDescription()`
+
+## 正常链路
+
+```mermaid
+flowchart LR
+  call["tool.call()"] --> progress["onProgress()"]
+  progress --> create["createProgressMessage()"]
+  create --> stream["StreamingToolExecutor / toolExecution.ts"]
+  stream --> usemsg["AssistantToolUseMessage"]
+  call --> result["tool_result"]
+  result --> render["UserToolSuccessMessage -> renderToolResultMessage()"]
+  usemsg --> activity["renderToolActivity / collapsed group / spinner"]
+```
+
+这个链路说明了一件事：工具 UI 不是执行完以后才补上的，而是从执行中的 `progress` 阶段就已经进入消息流。
+
+## 关键结构 / 状态
+
+| 结构 | 作用 | 典型位置 |
+|---|---|---|
+| `renderToolUseMessage()` | 把输入参数转成短而稳定的“调用摘要” | `src/Tool.ts` |
+| `renderToolResultMessage()` | 决定成功结果以什么形状展示 | `src/Tool.ts` |
+| `renderToolUseProgressMessage()` | 决定执行中如何显示 spinner、阶段、子消息 | `src/Tool.ts` |
+| `getActivityDescription()` | 给任务树、后台视图和紧凑模式一个现在进行时描述 | `src/Tool.ts`, `src/components/tasks/renderToolActivity.tsx` |
+| `createProgressMessage()` | 把工具 progress 变成统一消息对象 | `src/services/tools/toolExecution.ts` |
+| `pendingProgress` | `StreamingToolExecutor` 中专门缓存“应立即显示”的 progress | `src/services/tools/StreamingToolExecutor.ts` |
+
+还有一个很容易漏掉的细节：给模型看的 `mapToolResultToToolResultBlockParam()`，和给用户看的 `renderToolResultMessage()`，本来就不是同一套文本。前者强调 prompt 协议，后者强调人类可读性。
+
+## 一个端到端例子
+
+拿 `BashTool` 来看，一次工具调用至少会经历三层显示：
+
+1. `renderToolUseMessage()` 把输入参数压成类似“运行某个命令”的调用摘要。
+2. 执行过程中，`onProgress()` 不断产出 `bash_progress`，由 `renderToolUseProgressMessage()` 显示耗时、行数或当前阶段。
+3. 完成后，`renderToolResultMessage()` 决定是展示精简摘要、退出码，还是在 verbose 模式里展开更完整内容。
+
+`AgentTool` 更进一步：它的 progress 里甚至会嵌套子消息，所以 UI 不只是展示“百分比”，而是能渲染一个简化版的子对话流。
+
+## 失败与恢复
+
+| 问题 | 表现 | 优先排查 |
+|---|---|---|
+| 执行成功但界面没动静 | 只有最终结果，没有中间过程 | `onProgress -> createProgressMessage` 链是否断了 |
+| 结果显示异常或为空 | tool_result 在 transcript 里有，但 UI 不渲染 | `renderToolResultMessage()`、`outputSchema.safeParse()` |
+| 折叠行为不对 | 搜索/读取结果没被合并，或不该合并的被合并 | `isSearchOrReadCommand()` 与 `collapseReadSearch.ts` |
+| 任务树描述模糊 | 后台任务只显示工具名，不显示当前动作 | `getActivityDescription()` 与 `renderToolActivity.tsx` |
+
+这里一个很实用的恢复点是：`UserToolSuccessMessage` 在渲染前会先用 `outputSchema.safeParse()` 校验恢复后的 `toolUseResult`。这能避免 resumed transcript 因为旧格式或部分损坏而把整个渲染树打崩。
+
+## 边界与误读
+
+- 终端里看到的 diff、搜索结果和子 agent 进度不是“打印几行字符串”那么简单。
+- 给模型的 tool_result 文本，不等于给人类看的最终 UI。
+- 搜索索引还要考虑 `extractSearchText()`，这又和渲染协议不同，是第三套面向“可搜索性”的投影。
+- 某些工具选择不渲染结果是有意设计，例如结果已经在别的控制面板里可见。
+- “渲染不好看”有时不是组件问题，而是工具元数据声明错了。
+
+## 场景变体
+
+| 工具类型 | 渲染重点 |
+|---|---|
+| Bash / PowerShell | 流式进度、耗时、退出码与摘要 |
+| Read / Grep / Glob | 紧凑折叠、路径与命中可扫描性 |
+| FileEdit / Write | 调用摘要与结果差异可读性 |
+| AgentTool | 生命周期、子消息流、压缩后的活动总结 |
+
+## 继续读什么
+
+- [工具系统设计](/docs/tools/what-are-tools)
+- [工具结果预算](/docs/tools/tool-result-budgeting)
+- [子 Agent 机制](/docs/agent/sub-agents)
+
+## 相关源码入口
+
+- `src/Tool.ts`
+- `src/services/tools/toolExecution.ts`
+- `src/services/tools/StreamingToolExecutor.ts`
+- `src/components/messages/AssistantToolUseMessage.tsx`
+- `src/components/messages/UserToolResultMessage/UserToolSuccessMessage.tsx`
+- `src/components/tasks/renderToolActivity.tsx`
+
+## 本页证据等级
+
+- `external build active`: 工具显示协议、progress 消息链、搜索/读取折叠、活动描述
+- `ant-only`: 某些分类器附加 UI 提示
+- `inference`: “协议化 UI”是对执行协议与渲染协议并存这一事实的归纳

@@ -153,3 +153,22 @@ rg --files → 逐 chunk 到达 → 按行分割 → onLines(lines) 回调
 ```
 
 不需要等 ripgrep 完成整个搜索——第一批结果在 rg 仍在遍历目录树时就已展示。调用者可以通过 AbortSignal 提前终止搜索（例如找到足够多的结果后）。
+
+## 先读什么
+
+1. [工具系统设计](/docs/tools/what-are-tools)
+
+## 继续读什么
+
+- [工具池装配](/docs/tools/tool-pool-assembly)
+- [工具结果预算](/docs/tools/tool-result-budgeting)
+
+## 相关源码入口
+
+- `src/tools/GlobTool/*`
+- `src/tools/GrepTool/*`
+- `src/tools/ToolSearch/*`
+
+## 本页证据等级
+
+- `external build active`: 搜索与导航工具

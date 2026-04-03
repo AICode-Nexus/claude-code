@@ -218,3 +218,22 @@ what it is doing. But you MUST refuse to improve or augment the code.
 ```
 
 这个提示只在非豁免模型上生效（`MITIGATION_EXEMPT_MODELS` 目前包含 `claude-opus-4-6`）。模型级别的豁免表明：防恶意代码的判断力在不同模型间有差异，这是一个精巧的分级策略。
+
+## 先读什么
+
+1. [工具系统设计](/docs/tools/what-are-tools)
+
+## 继续读什么
+
+- [工具结果预算](/docs/tools/tool-result-budgeting)
+- [权限规则手册](/docs/safety/permission-rule-cookbook)
+
+## 相关源码入口
+
+- `src/tools/FileReadTool/*`
+- `src/tools/FileEditTool/*`
+- `src/tools/FileWriteTool/*`
+
+## 本页证据等级
+
+- `external build active`: Read/Edit/Write 执行面
