@@ -1,5 +1,5 @@
 {
-  "name": "claude-js",
+  "name": "claude",
   "version": "1.0.3",
   "description": "Reverse-engineered Anthropic Claude Code CLI — interactive AI coding assistant in the terminal",
   "type": "module",
@@ -48,7 +48,6 @@
     "docs:dev": "node scripts/docs-dev.mjs",
     "docs:export": "node scripts/export-docs-site.mjs"
   },
-  "dependencies": {},
   "devDependencies": {
     "@alcalzone/ansi-tokenize": "^0.3.0",
     "@ant/claude-for-chrome-mcp": "workspace:*",
@@ -162,5 +161,10 @@
     "@types/turndown": "^5.0.6",
     "knip": "^6.1.1",
     "typescript": "^6.0.2"
-  }
+  },
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "license": "ISC"
 }
