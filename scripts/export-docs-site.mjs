@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 const args = process.argv.slice(2);
 
 const LOCKED_VIEWPORT =
-  'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover';
+  'width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, viewport-fit=cover';
 
 // Inline script that:
 // 1. Blocks gesture/pinch zoom events (iOS Safari gesturestart, multi-touch)
@@ -16,12 +16,14 @@ const LOCKED_VIEWPORT =
 const noZoomGestureScript =
   '<script id="disable-mobile-zoom">' +
   '(function(){' +
-  "var V='width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover';" +
+  "var V='width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, viewport-fit=cover';" +
   'var n=function(e){e.preventDefault();};' +
   "document.addEventListener('gesturestart',n,{passive:false});" +
   "document.addEventListener('gesturechange',n,{passive:false});" +
   "document.addEventListener('gestureend',n,{passive:false});" +
   "document.addEventListener('touchmove',function(e){if(e.touches.length>1){e.preventDefault();}},{passive:false});" +
+  // Double-tap zoom prevention
+  "var t=0;document.addEventListener('touchend',function(e){var now=Date.now();if(now-t<300){e.preventDefault();}t=now;},{passive:false});" +
   // MutationObserver: guard viewport meta against hydration resets
   "var m=document.querySelector('meta[name=viewport]');" +
   'if(m){' +
@@ -32,10 +34,10 @@ const noZoomGestureScript =
   '</script>';
 
 // CSS to disable touch-based zoom gestures at the browser engine level.
-// Use !important to win over any framework-injected styles.
+// Use !important and wildcard selector to override all framework styles.
 const noZoomStyle =
   '<style id="disable-mobile-zoom-css">' +
-  'html,body{touch-action:pan-x pan-y!important;-ms-touch-action:pan-x pan-y!important;}' +
+  'html,body,html *{touch-action:pan-x pan-y!important;-ms-touch-action:pan-x pan-y!important;-webkit-touch-callout:none!important;}' +
   '</style>';
 
 function getArgValue(flag, defaultValue) {
