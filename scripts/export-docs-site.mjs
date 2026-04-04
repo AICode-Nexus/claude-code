@@ -3,8 +3,11 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const args = process.argv.slice(2);
+const DIRECT_RUN_PATH = fileURLToPath(import.meta.url);
+const MINTLIFY_EXPORT_PATCH_MARKER = 'cc-export-fetch-patch-v1';
 
 const LOCKED_VIEWPORT =
   'width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, viewport-fit=cover';
@@ -93,6 +96,75 @@ function runCommand(command, commandArgs, options = {}) {
       rejectPromise(new Error(`${command} exited with code ${code ?? 1}`));
     });
   });
+}
+
+export function buildMintlifyExportPatch(source) {
+  if (source.includes(MINTLIFY_EXPORT_PATCH_MARKER)) {
+    return source;
+  }
+
+  const concurrencyNeedle = 'const CONCURRENCY = 10;';
+  const fetchNeedle = 'const res = await fetch(`${baseUrl}${route}`);';
+
+  if (!source.includes(concurrencyNeedle) || !source.includes(fetchNeedle)) {
+    throw new Error(
+      'Unable to patch Mintlify export implementation: unexpected source layout'
+    );
+  }
+
+  const concurrencyPatch = `const EXPORT_PATCH_MARKER = '${MINTLIFY_EXPORT_PATCH_MARKER}';
+const CONCURRENCY = Number(process.env.MINTLIFY_EXPORT_CONCURRENCY ?? '4');
+const EXPORT_FETCH_TIMEOUT_MS = Number(process.env.MINTLIFY_EXPORT_FETCH_TIMEOUT_MS ?? '45000');
+const EXPORT_FETCH_RETRIES = Number(process.env.MINTLIFY_EXPORT_FETCH_RETRIES ?? '1');
+const EXPORT_FETCH_RETRY_DELAY_MS = Number(process.env.MINTLIFY_EXPORT_FETCH_RETRY_DELAY_MS ?? '1000');
+function normalizeExportFetchError(error) {
+  if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+    return new Error(\`timed out after \${EXPORT_FETCH_TIMEOUT_MS}ms\`);
+  }
+  return error instanceof Error ? error : new Error(String(error));
+}
+async function fetchExportRoute(url) {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await fetch(url, { signal: AbortSignal.timeout(EXPORT_FETCH_TIMEOUT_MS) });
+    }
+    catch (error) {
+      if (attempt >= EXPORT_FETCH_RETRIES) {
+        throw normalizeExportFetchError(error);
+      }
+      attempt += 1;
+      await new Promise(resolve => setTimeout(resolve, EXPORT_FETCH_RETRY_DELAY_MS));
+    }
+  }
+}`;
+
+  return source
+    .replace(concurrencyNeedle, concurrencyPatch)
+    .replace(fetchNeedle, 'const res = await fetchExportRoute(`${baseUrl}${route}`);');
+}
+
+export async function patchMintlifyExportImplementation(cliDir) {
+  const previewingExportPath = join(
+    cliDir,
+    'node_modules',
+    '@mintlify',
+    'previewing',
+    'dist',
+    'local-preview',
+    'export.js'
+  );
+
+  if (!existsSync(previewingExportPath)) {
+    throw new Error(`Mintlify export implementation not found at ${previewingExportPath}`);
+  }
+
+  const originalSource = await readFile(previewingExportPath, 'utf8');
+  const patchedSource = buildMintlifyExportPatch(originalSource);
+
+  if (patchedSource !== originalSource) {
+    await writeFile(previewingExportPath, patchedSource, 'utf8');
+  }
 }
 
 /**
@@ -222,6 +294,8 @@ async function main() {
       env: installEnv,
     });
 
+    await patchMintlifyExportImplementation(cliDir);
+
     await runCommand(
       'node',
       [join(cliDir, 'node_modules', 'mintlify', 'index.js'), 'export', '--output', zipPath],
@@ -260,8 +334,9 @@ async function main() {
     await rm(workingDir, { recursive: true, force: true });
   }
 }
-
-main().catch(error => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+if (process.argv[1] && resolve(process.argv[1]) === DIRECT_RUN_PATH) {
+  main().catch(error => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}
