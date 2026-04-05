@@ -21,9 +21,12 @@ echo "say hello" | bun run src/entrypoints/cli.tsx -p
 
 # Build (outputs dist/cli.js, ~25MB)
 bun run build
+
+# Targeted docs export safety checks
+bun test scripts/docs-static-compat.test.mjs scripts/export-docs-site.test.mjs
 ```
 
-No test runner is configured. No linter is configured.
+The repo has Bun tests and a Biome lint script, but the current CI lint baseline is noisy.
 
 ## Architecture
 
@@ -113,3 +116,4 @@ All `feature('FLAG_NAME')` calls come from `bun:bundle` (a build-time API). In t
 - **React Compiler output** — Components have decompiled memoization boilerplate (`const $ = _c(N)`). This is normal.
 - **`bun:bundle` import** — In `src/main.tsx` and other files, `import { feature } from 'bun:bundle'` works at build time. At dev-time, the polyfill in `cli.tsx` provides it.
 - **`src/` path alias** — tsconfig maps `src/*` to `./src/*`. Imports like `import { ... } from 'src/utils/...'` are valid.
+- **Docs export rules** — for `docs/**/*.mdx`, use relative internal links, avoid root-relative `/docs/...` paths, and avoid Mintlify `Frame` diagram embeds on GitHub Pages. See `docs/MAINTAINING.md`.
