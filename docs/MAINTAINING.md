@@ -8,6 +8,7 @@ This docs site is authored in MDX, exported through Mintlify, and published on G
 - Do not use root-relative internal paths such as `/docs/...` in MDX content.
 - Avoid Mintlify `Frame` wrappers for diagrams and screenshots on Pages-exported docs.
 - Prefer plain relative links to large diagrams and screenshots when in doubt.
+- Do not remove the Pages export runtime overrides in `scripts/export-docs-site.mjs` without re-verifying the published site in a browser.
 - If you need to add a new interactive or custom MDX component, verify the exported site with a real browser reload before merging.
 
 ## Required Checks
@@ -21,3 +22,5 @@ bun test scripts/docs-static-compat.test.mjs scripts/export-docs-site.test.mjs
 ## Why These Rules Exist
 
 GitHub Pages serves a static export. Root-relative internal links and some Mintlify component patterns can survive the initial render but fail after hydration or refresh, which can surface as Mintlify's `Error loading page` 500 screen.
+
+Mintlify's export path also ships a CLI-oriented client bundle by default. The export script patches the generated site so GitHub Pages keeps the correct base path and does not boot local-only runtime branches.
