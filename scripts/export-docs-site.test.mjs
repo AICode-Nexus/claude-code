@@ -69,6 +69,7 @@ describe('rewriteTextAsset', () => {
     const original = [
       'const env={NEXT_PUBLIC_ENV:"cli",NEXT_PUBLIC_IS_LOCAL_CLIENT:"true"};',
       'const asset="/_next/static/chunk.js";',
+      'const home={href:"/"};',
     ].join('\n');
 
     const rewritten = rewriteTextAsset(original, '/claude-code');
@@ -76,5 +77,6 @@ describe('rewriteTextAsset', () => {
     expect(rewritten).toContain('NEXT_PUBLIC_ENV:"production"');
     expect(rewritten).toContain('NEXT_PUBLIC_IS_LOCAL_CLIENT:"false"');
     expect(rewritten).toContain('"/claude-code/_next/static/chunk.js"');
+    expect(rewritten).toContain('href:"/claude-code/"');
   });
 });

@@ -187,6 +187,7 @@ export function rewriteTextAsset(content, basePath) {
   const pathPrefixPattern =
     /(["'`])\/(?=(_next\/|docs\/|favicons\/|sitemap\.xml|robots\.txt))/g;
   const rootHrefPattern = /(href\s*[=:]\s*["'])\/(?=["'])/g;
+  const rootHrefLiteralPattern = /(["']?href["']\s*:\s*["'])\/(?=["'])/g;
   const cssUrlPattern =
     /url\(\s*\/(?=(_next\/|docs\/|favicons\/|sitemap\.xml|robots\.txt))/g;
   const cliEnvPattern = /NEXT_PUBLIC_ENV:(["'])cli\1/g;
@@ -196,6 +197,7 @@ export function rewriteTextAsset(content, basePath) {
   if (basePath) {
     rewritten = rewritten.replace(pathPrefixPattern, `$1${basePath}/`);
     rewritten = rewritten.replace(rootHrefPattern, `$1${basePath}/`);
+    rewritten = rewritten.replace(rootHrefLiteralPattern, `$1${basePath}/`);
     rewritten = rewritten.replace(cssUrlPattern, `url(${basePath}/`);
   }
 
