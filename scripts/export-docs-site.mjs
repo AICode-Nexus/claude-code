@@ -79,6 +79,17 @@ function getRepoBasePath() {
   return `/${repo}`;
 }
 
+export function buildMintlifyExportEnv(baseEnv, basePath) {
+  return {
+    ...baseEnv,
+    BASE_PATH: basePath,
+    NEXT_PUBLIC_BASE_PATH: basePath,
+    NEXT_PUBLIC_ENV: 'production',
+    NEXT_PUBLIC_AUTH_ENABLED: 'false',
+    NEXT_PUBLIC_IS_LOCAL_CLIENT: 'false',
+  };
+}
+
 function runCommand(command, commandArgs, options = {}) {
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(command, commandArgs, {
@@ -172,12 +183,14 @@ export async function patchMintlifyExportImplementation(cliDir) {
  *   1. Adjust paths for the GitHub Pages base path (if any).
  *   2. For HTML files: force viewport to disable zoom, inject CSS + JS guards.
  */
-function rewriteTextAsset(content, basePath) {
+export function rewriteTextAsset(content, basePath) {
   const pathPrefixPattern =
     /(["'`])\/(?=(_next\/|docs\/|favicons\/|sitemap\.xml|robots\.txt))/g;
   const rootHrefPattern = /(href\s*[=:]\s*["'])\/(?=["'])/g;
   const cssUrlPattern =
     /url\(\s*\/(?=(_next\/|docs\/|favicons\/|sitemap\.xml|robots\.txt))/g;
+  const cliEnvPattern = /NEXT_PUBLIC_ENV:(["'])cli\1/g;
+  const localClientPattern = /NEXT_PUBLIC_IS_LOCAL_CLIENT:(["'])true\1/g;
   let rewritten = content;
 
   if (basePath) {
@@ -185,6 +198,14 @@ function rewriteTextAsset(content, basePath) {
     rewritten = rewritten.replace(rootHrefPattern, `$1${basePath}/`);
     rewritten = rewritten.replace(cssUrlPattern, `url(${basePath}/`);
   }
+
+  // Mintlify exports a CLI-flavored client bundle. Static Pages deploys should
+  // not boot the CLI/local-client runtime branches.
+  rewritten = rewritten.replace(cliEnvPattern, 'NEXT_PUBLIC_ENV:"production"');
+  rewritten = rewritten.replace(
+    localClientPattern,
+    'NEXT_PUBLIC_IS_LOCAL_CLIENT:"false"'
+  );
 
   // Only inject zoom-lock into HTML files (those with </head>).
   if (rewritten.includes('</head>')) {
@@ -262,6 +283,7 @@ async function rewriteSitePaths(rootDir, basePath) {
 async function main() {
   const outputDir = resolve(getArgValue('--output', './.pages-dist'));
   const basePath = getRepoBasePath();
+  const exportEnv = buildMintlifyExportEnv(process.env, basePath);
   const workingDir = await mkdtemp(join(tmpdir(), 'claude-code-pages-'));
   const cliDir = join(workingDir, 'mintlify-cli');
   const zipPath = join(workingDir, 'site-export.zip');
@@ -299,7 +321,7 @@ async function main() {
     await runCommand(
       'node',
       [join(cliDir, 'node_modules', 'mintlify', 'index.js'), 'export', '--output', zipPath],
-      { cwd: process.cwd(), env: process.env }
+      { cwd: process.cwd(), env: exportEnv }
     );
 
     if (!existsSync(zipPath)) {

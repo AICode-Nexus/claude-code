@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'bun:test';
-import { buildMintlifyExportPatch } from './export-docs-site.mjs';
+import {
+  buildMintlifyExportEnv,
+  buildMintlifyExportPatch,
+  rewriteTextAsset,
+} from './export-docs-site.mjs';
 
 const sampleMintlifyExportSource = [
   "const CONCURRENCY = 10;",
@@ -40,5 +44,37 @@ describe('buildMintlifyExportPatch', () => {
     expect(() => buildMintlifyExportPatch('const CONCURRENCY = 5;')).toThrow(
       'Unable to patch Mintlify export implementation: unexpected source layout'
     );
+  });
+});
+
+describe('buildMintlifyExportEnv', () => {
+  it('forces Pages-safe runtime env overrides', () => {
+    const env = buildMintlifyExportEnv({ EXISTING: '1' }, '/claude-code');
+
+    expect(env).toEqual(
+      expect.objectContaining({
+        EXISTING: '1',
+        BASE_PATH: '/claude-code',
+        NEXT_PUBLIC_BASE_PATH: '/claude-code',
+        NEXT_PUBLIC_ENV: 'production',
+        NEXT_PUBLIC_AUTH_ENABLED: 'false',
+        NEXT_PUBLIC_IS_LOCAL_CLIENT: 'false',
+      })
+    );
+  });
+});
+
+describe('rewriteTextAsset', () => {
+  it('rewrites CLI runtime literals out of exported text assets', () => {
+    const original = [
+      'const env={NEXT_PUBLIC_ENV:"cli",NEXT_PUBLIC_IS_LOCAL_CLIENT:"true"};',
+      'const asset="/_next/static/chunk.js";',
+    ].join('\n');
+
+    const rewritten = rewriteTextAsset(original, '/claude-code');
+
+    expect(rewritten).toContain('NEXT_PUBLIC_ENV:"production"');
+    expect(rewritten).toContain('NEXT_PUBLIC_IS_LOCAL_CLIENT:"false"');
+    expect(rewritten).toContain('"/claude-code/_next/static/chunk.js"');
   });
 });
