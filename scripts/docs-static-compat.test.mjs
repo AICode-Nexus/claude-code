@@ -23,6 +23,14 @@ async function listMdxFiles(dir) {
 }
 
 describe('docs static export compatibility', () => {
+  it('defines a docs-local logo href to avoid GitHub Pages root prefetches', async () => {
+    const config = JSON.parse(
+      await readFile(join(process.cwd(), 'docs.json'), 'utf8')
+    );
+
+    expect(config.logo?.href).toMatch(/^\/docs\/.+/);
+  });
+
   it('avoids Mintlify Frame embeds that break on GitHub Pages refresh', async () => {
     const files = await listMdxFiles(join(process.cwd(), 'docs'));
     const offenders = [];

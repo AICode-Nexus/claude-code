@@ -96,7 +96,8 @@
   },
   "logo": {
     "light": "/docs/logo/light.svg",
-    "dark": "/docs/logo/dark.svg"
+    "dark": "/docs/logo/dark.svg",
+    "href": "/docs/introduction/what-is-claude-code"
   },
   "background": {
     "color": {
