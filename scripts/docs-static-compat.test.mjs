@@ -37,4 +37,20 @@ describe('docs static export compatibility', () => {
 
     expect(offenders).toEqual([]);
   });
+
+  it('avoids root-relative /docs links inside MDX content', async () => {
+    const files = await listMdxFiles(join(process.cwd(), 'docs'));
+    const offenders = [];
+    const rootRelativeDocsPattern = /(\]\(\/docs\/|href="\/docs\/|src="\/docs\/)/;
+
+    for (const file of files) {
+      const content = await readFile(file, 'utf8');
+
+      if (rootRelativeDocsPattern.test(content)) {
+        offenders.push(file);
+      }
+    }
+
+    expect(offenders).toEqual([]);
+  });
 });
